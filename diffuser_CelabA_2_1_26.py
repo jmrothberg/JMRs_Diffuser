@@ -1082,7 +1082,7 @@ def main():
                     'beta_start': 1e-4,         # Standard DDPM value
                     'beta_end': 0.02,           # Standard DDPM value
                     'batch_size': 128,          # Large batch for smaller model
-                    'learning_rate': 3e-4,      # Higher LR for optimized model
+                    'learning_rate': 1e-4,      # LOWERED: Smaller model needs gentler LR (was 3e-4, caused mode collapse)
                     'schedule_type': 'linear',  # Linear schedule proven for CIFAR-10
                     'cosine_s': 0.008,          # Not used with linear
                     'noise_scale': 1.0,         # Standard noise scale
