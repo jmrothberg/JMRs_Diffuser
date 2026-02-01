@@ -605,18 +605,42 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             print(f"Found main checkpoint: {main_checkpoint}")
     else:
         # Modified pattern to include attention
-        root_checkpoints = [f for f in os.listdir('.') 
+        root_checkpoints = [f for f in os.listdir('.')
                           if f.startswith(f'diffusion_checkpoint_{dataset_name}_ts')]
         if root_checkpoints:
+            # Check for compatible checkpoints
+            compatible_checkpoints = []
             for ckpt_file in root_checkpoints:
-                ckpt = torch.load(ckpt_file)
-                if (ckpt.get('dataset_name') == dataset_name and
-                    ckpt.get('emb_dim') == diffusion.emb_dim and
-                    ckpt.get('use_attention', False) == model_unwrapped.use_attention and  # Check attention matches
-                    ckpt.get('use_optimized_cifar10', False) == model_unwrapped.use_optimized_cifar10):  # Check optimized flag matches
-                    checkpoint_path = ckpt_file
-                    print(f"Found compatible checkpoint in root directory: {ckpt_file}")
-                    break
+                try:
+                    ckpt = torch.load(ckpt_file)
+                    if (ckpt.get('dataset_name') == dataset_name and
+                        ckpt.get('emb_dim') == diffusion.emb_dim and
+                        ckpt.get('use_attention', False) == model_unwrapped.use_attention and
+                        ckpt.get('use_optimized_cifar10', False) == model_unwrapped.use_optimized_cifar10):
+                        compatible_checkpoints.append(ckpt_file)
+                except:
+                    pass  # Skip corrupted checkpoints
+
+            if len(compatible_checkpoints) > 1:
+                # Multiple compatible checkpoints - let user choose
+                print("\nFound multiple compatible checkpoints:")
+                print("0. Start fresh (no checkpoint)")
+                for idx, file in enumerate(compatible_checkpoints, 1):
+                    print(f"{idx}. {file}")
+                while True:
+                    choice = input(f"\nSelect checkpoint number (0-{len(compatible_checkpoints)}): ").strip()
+                    if choice.isdigit() and 0 <= int(choice) <= len(compatible_checkpoints):
+                        if int(choice) == 0:
+                            print("Starting fresh training without checkpoint")
+                            checkpoint_path = None
+                        else:
+                            checkpoint_path = compatible_checkpoints[int(choice) - 1]
+                            print(f"Selected checkpoint: {checkpoint_path}")
+                        break
+                    print(f"Invalid choice. Please enter 0-{len(compatible_checkpoints)}")
+            elif len(compatible_checkpoints) == 1:
+                checkpoint_path = compatible_checkpoints[0]
+                print(f"Found compatible checkpoint in root directory: {checkpoint_path}")
         
         elif os.path.exists(checkpoint_dir):
             dir_checkpoints = [f for f in os.listdir(checkpoint_dir) 
@@ -832,11 +856,11 @@ def inference_mode(model_path, device, dataset_name):
         for idx, file in enumerate(checkpoint_files, 1):
             print(f"{idx}. {file}")
         while True:
-            choice = input("\nSelect checkpoint number: ").strip()
+            choice = input(f"\nSelect checkpoint number (1-{len(checkpoint_files)}): ").strip()
             if choice.isdigit() and 1 <= int(choice) <= len(checkpoint_files):
                 checkpoint_file = checkpoint_files[int(choice) - 1]
                 break
-            print("Invalid choice. Please try again.")
+            print(f"Invalid choice. Please enter 1-{len(checkpoint_files)}")
     else:
         checkpoint_file = checkpoint_files[0]
     
