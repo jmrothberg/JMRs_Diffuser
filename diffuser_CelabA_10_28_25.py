@@ -1091,15 +1091,15 @@ def main():
                 'image_size': 64,  # CelebA images are typically cropped to 64x64
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 1000,          # Higher timesteps for better quality on faces
-                    'beta_start': 1e-4,         # Standard start for higher resolution
-                    'beta_end': 0.02,           # Standard end for complex images
-                    'batch_size': 8,            # Smaller batch for 64x64 images
-                    'learning_rate': 1e-4,      # Conservative learning rate
+                    'timesteps': 1000,          # Optimal for high-resolution faces
+                    'beta_start': 1e-4,         # Standard DDPM value
+                    'beta_end': 0.02,           # Standard DDPM value
+                    'batch_size': 16,           # Increased from 8 (still fits in 48GB VRAM)
+                    'learning_rate': 2e-4,      # Increased from 1e-4 for faster convergence
                     'schedule_type': 'cosine',  # Cosine works better for complex images
                     'cosine_s': 0.008,          # Standard cosine parameter
-                    'noise_scale': 1.0,         # Default noise scale
-                    'emb_dim': 256              # Larger embedding for 64x64 resolution
+                    'noise_scale': 1.0,         # Standard noise scale
+                    'emb_dim': 256              # Large embedding for 64x64 resolution
                 }
             }
         }
