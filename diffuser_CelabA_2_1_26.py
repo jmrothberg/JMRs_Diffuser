@@ -1127,7 +1127,9 @@ def main():
         print("\nSelect dataset:")
         for idx, (name, info) in enumerate(DATASETS.items(), 1):
             if name == 'cifar10_optimized':
-                print(f"{idx}. {name.upper()} ({info['image_size']}x{info['image_size']}, {info['in_channels']} channels) - FASTER/BETTER")
+                print(f"{idx}. {name.upper()} ({info['image_size']}x{info['image_size']}, {info['in_channels']} channels) - FASTER, SINGLE GPU ONLY")
+            elif name == 'cifar10':
+                print(f"{idx}. {name.upper()} ({info['image_size']}x{info['image_size']}, {info['in_channels']} channels) - MULTI-GPU SUPPORTED")
             else:
                 print(f"{idx}. {name.upper()} ({info['image_size']}x{info['image_size']}, {info['in_channels']} channels)")
 
@@ -1547,22 +1549,29 @@ def main():
                 print("CPU mode - multi-GPU not applicable")
 
             if args.num_gpus > 1 and device.type == 'cuda':
-                # Check if this is the optimized CIFAR-10 model - use single GPU for stability
+                # Check if this is the optimized CIFAR-10 model - force single GPU for stability
                 model_unwrapped = model
                 if getattr(model_unwrapped, 'use_optimized_cifar10', False):
-                    print(f"Optimized CIFAR-10 model detected - using single GPU for stability")
-                    print("Consider using --num_gpus 1 with optimized model to avoid NaN issues")
+                    print("\n" + "!"*60)
+                    print("CIFAR-10 OPTIMIZED MODEL: Single GPU only")
+                    print("!"*60)
+                    print("The optimized model is designed for single-GPU training.")
+                    print("Forcing num_gpus from {} to 1 for stability.".format(args.num_gpus))
+                    print("Use standard CIFAR-10 (option 2) for multi-GPU support.")
+                    print("!"*60 + "\n")
                     args.num_gpus = 1
 
                 if args.num_gpus > 1:
+                    print(f"\n{'='*60}")
                     print(f"Setting up DataParallel with {args.num_gpus} GPUs")
+                    print(f"{'='*60}")
                     # Select specific devices
                     device_ids = list(range(args.num_gpus))
                     model = nn.DataParallel(model, device_ids=device_ids)
                     print(f"Model parallelized across GPUs: {device_ids}")
                     # Calculate and display effective batch size
                     effective_batch_size = args.batch_size * args.num_gpus
-                    print(f"Effective batch size: {effective_batch_size}")
+                    print(f"Effective batch size: {args.batch_size} × {args.num_gpus} = {effective_batch_size}")
 
                     # Add DataParallel-specific fixes for freezing issues
                     print("Applied DataParallel fixes:")
@@ -1570,6 +1579,12 @@ def main():
                     print("- Use persistent workers to avoid worker respawning overhead")
                     print("- Reduced prefetch factor to minimize memory pressure")
                     print("- If still freezing, try reducing batch_size or num_gpus")
+                    print(f"{'='*60}\n")
+                else:
+                    print(f"\n{'='*60}")
+                    print(f"Using SINGLE GPU (GPU 0) for training")
+                    print(f"Batch size: {args.batch_size}")
+                    print(f"{'='*60}\n")
             
             # Update optimizer settings - add learning rate scaling for multi-GPU
             base_lr = args.learning_rate
