@@ -554,19 +554,17 @@ def save_samples(model, diffusion, device, epoch, avg_loss, dataset_name, batch_
 def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_name, override_lr=None, use_batch_inference=True):
     """
     Main training loop with automatic checkpointing and sample generation.
-    Uses OneCycleLR scheduler and gradient clipping for stable training.
+    Uses cosine annealing scheduler for gradual LR decay.
     """
     model.train()
-    
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+
+    # Use CosineAnnealingLR with warm restarts - much better for diffusion models
+    # This provides gentle LR decay with periodic restarts
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        max_lr=override_lr if override_lr is not None else optimizer.param_groups[0]['lr'],
-        epochs=num_epochs,
-        steps_per_epoch=len(dataloader),
-        pct_start=0.4,
-        div_factor=1.0,
-        final_div_factor=5,  # Keep LR higher at end
-        three_phase=True
+        T_0=50,  # Restart every 50 epochs
+        T_mult=2,  # Double the restart period each time
+        eta_min=1e-6  # Minimum learning rate
     )
     
     # Only set initial learning rate if explicitly overriding
@@ -1032,14 +1030,14 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 500,           # Back to 500 as you suggested
-                    'beta_start': 1e-5,         # Reduced from 1e-4 to 1e-5 for gentler start
-                    'beta_end': 0.012,          # Reduced from 0.02 to 0.012 for less aggressive noise
-                    'batch_size': 32,           # Keep 32 for stability
-                    'learning_rate': 1e-4,      # Reduced to 1e-4 for more stable training
-                    'schedule_type': 'linear',  # Back to linear as you suggested
-                    'cosine_s': 0.008,         # (not used with linear schedule)
-                    'noise_scale': 0.9,         # Slightly reduced noise scale
+                    'timesteps': 1000,          # Increased from 500 - CIFAR-10 needs more steps
+                    'beta_start': 1e-4,         # Standard DDPM value
+                    'beta_end': 0.02,           # Standard DDPM value for CIFAR-10
+                    'batch_size': 128,          # Larger batch for more stable gradients
+                    'learning_rate': 2e-4,      # Higher LR for faster convergence
+                    'schedule_type': 'linear',  # Linear is proven for CIFAR-10
+                    'cosine_s': 0.008,          # Not used with linear
+                    'noise_scale': 1.0,         # Standard noise scale
                     'emb_dim': 128
                 }
             },
@@ -1049,15 +1047,15 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 500,           # Same as regular CIFAR-10
-                    'beta_start': 1e-5,         # Same gentler start
-                    'beta_end': 0.012,          # Same noise range
-                    'batch_size': 128,          # Increased for better stability with smaller model
-                    'learning_rate': 1e-4,      # Keep same as original to avoid NaN issues
-                    'schedule_type': 'linear',  # Linear schedule (not cosine as requested)
-                    'cosine_s': 0.008,         # Not used with linear
-                    'noise_scale': 0.9,         # Same noise scale
-                    'emb_dim': 128,             # Same embedding dimension
+                    'timesteps': 1000,          # Increased from 500 for better quality
+                    'beta_start': 1e-4,         # Standard DDPM value
+                    'beta_end': 0.02,           # Standard DDPM value
+                    'batch_size': 128,          # Large batch for smaller model
+                    'learning_rate': 3e-4,      # Higher LR for optimized model
+                    'schedule_type': 'linear',  # Linear schedule proven for CIFAR-10
+                    'cosine_s': 0.008,          # Not used with linear
+                    'noise_scale': 1.0,         # Standard noise scale
+                    'emb_dim': 128,             # Keep embedding dimension
                     'use_optimized_cifar10': True  # Enable optimized model architecture
                 }
             },
