@@ -577,7 +577,6 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
         mode='min',
         factor=0.5,      # Reduce LR by half when triggered
         patience=20,     # Wait 20 epochs of no improvement before reducing
-        verbose=True,    # Print when LR changes
         min_lr=1e-6      # Don't go below this
     )
     
@@ -805,7 +804,13 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             print(f"Saved checkpoint at epoch {epoch}")
 
         # Step the scheduler with loss value (ReduceLROnPlateau needs this)
+        old_lr = optimizer.param_groups[0]['lr']
         scheduler.step(avg_loss)
+        new_lr = optimizer.param_groups[0]['lr']
+
+        # Manually print LR change (verbose parameter not available in all PyTorch versions)
+        if new_lr != old_lr:
+            print(f"Learning rate reduced: {old_lr:.6f} → {new_lr:.6f}")
         
         # Only save samples once per epoch, at the end
         if epoch % 1 == 0:  # Every epoch
