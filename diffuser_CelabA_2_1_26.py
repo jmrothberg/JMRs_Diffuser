@@ -1361,7 +1361,6 @@ def main():
                     transforms.Normalize(*dataset_config['normalize'])
                 ])
                 # Check CelebA file structure
-                import os
                 print("Checking CelebA file structure...")
                 print(f"Current working directory: {os.getcwd()}")
                 print(f"Looking for files in: {os.path.abspath('./data')}")
@@ -1416,7 +1415,6 @@ def main():
 
                 # Check for missing files in sequence
                 print("Checking for missing files in CelebA sequence...")
-                import os
                 img_dir = './data/img_align_celeba'
                 expected_files = {f"{i:06d}.jpg" for i in range(1, 202600)}  # 000001.jpg to 202599.jpg
                 actual_files = set(f for f in os.listdir(img_dir) if f.endswith('.jpg'))
