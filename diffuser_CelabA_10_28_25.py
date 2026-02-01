@@ -315,9 +315,10 @@ class DiffusionModel:
         use_noise_scaling: If True, reduce noise gradually during sampling
         cosine_s: Cosine schedule offset parameter
         emb_dim: Embedding dimension for conditioning
+        device: Device to use (cuda/mps/cpu) - if None, auto-detected
     """
-    def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02, schedule_type='linear', 
-                 noise_scale=1.0, use_noise_scaling=False, cosine_s=0.008, emb_dim=128):
+    def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02, schedule_type='linear',
+                 noise_scale=1.0, use_noise_scaling=False, cosine_s=0.008, emb_dim=128, device=None):
         self.timesteps = timesteps
         self.beta_start = beta_start
         self.beta_end = beta_end
@@ -326,18 +327,28 @@ class DiffusionModel:
         self.use_noise_scaling = use_noise_scaling
         self.cosine_s = cosine_s
         self.emb_dim = emb_dim
-        
+
+        # Auto-detect device if not specified
+        if device is None:
+            if torch.cuda.is_available():
+                device = torch.device('cuda')
+            elif torch.backends.mps.is_available():
+                device = torch.device('mps')
+            else:
+                device = torch.device('cpu')
+        self.device = device
+
         # Modify name_suffix to include embedding dimension
         self.name_suffix = f"ts{timesteps}_bs{beta_start:.0e}_be{beta_end:.0e}_emb{emb_dim}"
-        
-        # Linear or cosine beta schedule
+
+        # Linear or cosine beta schedule - device-agnostic
         if schedule_type == 'linear':
-            self.betas = torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float32).cuda()
+            self.betas = torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float32).to(device)
         elif schedule_type == 'cosine':
-            self.betas = self.cosine_beta_schedule(timesteps, s=self.cosine_s).cuda()
+            self.betas = self.cosine_beta_schedule(timesteps, s=self.cosine_s).to(device)
         else:
             raise ValueError(f"Invalid schedule_type: {schedule_type}. Choose 'linear' or 'cosine'.")
-        
+
         self.alphas = 1. - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
@@ -855,7 +866,8 @@ def inference_mode(model_path, device, dataset_name):
         schedule_type=checkpoint.get('schedule_type', 'linear'),  # Default to linear if not found
         noise_scale=checkpoint.get('noise_scale', 1.0),
         use_noise_scaling=checkpoint.get('use_noise_scaling', False),
-        cosine_s=checkpoint.get('cosine_s', 0.008)
+        cosine_s=checkpoint.get('cosine_s', 0.008),
+        device=device
     )
     
     print("\nDiffusion Model Inference Mode")
@@ -979,9 +991,20 @@ def main():
         pass
     
     # Set device and random seed right at the start
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Auto-detect best available device: CUDA (NVIDIA) > MPS (Apple) > CPU
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        device_name = torch.cuda.get_device_name(0)
+        print(f"Using device: CUDA - {device_name}")
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+        print(f"Using device: MPS (Apple Silicon)")
+        print("Note: MPS doesn't support multi-GPU. Using single device.")
+    else:
+        device = torch.device('cpu')
+        print(f"Using device: CPU (WARNING: Training will be very slow!)")
+
     torch.manual_seed(42)
-    print(f"Using device: {device}")
     
     try:
         # Set proper defaults in argument parser
@@ -1263,36 +1286,48 @@ def main():
             print(f"Noise Schedule: {args.schedule_type}")
             print(f"Learning rate: {args.learning_rate}")
 
-            # Add GPU selection option
+            # Add GPU selection option (only for CUDA)
             if args.num_gpus is None:
-                total_gpus = torch.cuda.device_count()
-                if total_gpus > 1:
-                    print(f"\nMulti-GPU Training:")
-                    print(f"Detected {total_gpus} GPUs available")
-                    gpu_choices = [f"{i+1} GPU{'s' if i > 0 else ''}" for i in range(total_gpus)]
-                    print("Options:")
-                    for i, choice in enumerate(gpu_choices, 1):
-                        print(f"{i}. Use {choice}")
-                    
-                    while True:
-                        gpu_choice = input(f"\nHow many GPUs to use? (1-{total_gpus}, default={total_gpus}): ").strip()
-                        if gpu_choice == "":
-                            args.num_gpus = total_gpus
-                            break
-                        elif gpu_choice.isdigit() and 1 <= int(gpu_choice) <= total_gpus:
-                            args.num_gpus = int(gpu_choice)
-                            break
-                        print(f"Please enter a number between 1 and {total_gpus}")
+                if device.type == 'cuda':
+                    total_gpus = torch.cuda.device_count()
+                    if total_gpus > 1:
+                        print(f"\nMulti-GPU Training:")
+                        print(f"Detected {total_gpus} CUDA GPUs available")
+                        gpu_choices = [f"{i+1} GPU{'s' if i > 0 else ''}" for i in range(total_gpus)]
+                        print("Options:")
+                        for i, choice in enumerate(gpu_choices, 1):
+                            print(f"{i}. Use {choice}")
+
+                        while True:
+                            gpu_choice = input(f"\nHow many GPUs to use? (1-{total_gpus}, default={total_gpus}): ").strip()
+                            if gpu_choice == "":
+                                args.num_gpus = total_gpus
+                                break
+                            elif gpu_choice.isdigit() and 1 <= int(gpu_choice) <= total_gpus:
+                                args.num_gpus = int(gpu_choice)
+                                break
+                            print(f"Please enter a number between 1 and {total_gpus}")
+                    else:
+                        args.num_gpus = 1
+                        print("\nSingle GPU training (only 1 CUDA GPU detected)")
                 else:
+                    # MPS or CPU - always single device
                     args.num_gpus = 1
-                    print("\nSingle GPU training (only 1 GPU detected)")
+                    print(f"\n{device.type.upper()} mode - single device")
             else:
-                # Ensure num_gpus doesn't exceed available GPUs
-                args.num_gpus = min(args.num_gpus, torch.cuda.device_count())
-                if args.num_gpus <= 0:
+                if device.type == 'cuda':
+                    # Ensure num_gpus doesn't exceed available GPUs
+                    args.num_gpus = min(args.num_gpus, torch.cuda.device_count())
+                    if args.num_gpus <= 0:
+                        args.num_gpus = 1
+                else:
+                    # Force single device for MPS/CPU
                     args.num_gpus = 1
-            
-            print(f"Using {args.num_gpus} GPU{'s' if args.num_gpus > 1 else ''}")
+
+            if device.type == 'cuda':
+                print(f"Using {args.num_gpus} GPU{'s' if args.num_gpus > 1 else ''}")
+            else:
+                print(f"Using {device.type.upper()} (single device)")
 
             # Ask about batch inference preference once (skip for CelebA)
             if dataset_name != 'celeba':
@@ -1483,7 +1518,8 @@ def main():
                 noise_scale=args.noise_scale,
                 use_noise_scaling=args.use_noise_scaling,
                 cosine_s=args.cosine_s,
-                emb_dim=args.emb_dim
+                emb_dim=args.emb_dim,
+                device=device
             )
 
             # Create model with correct channels and classes
@@ -1499,7 +1535,15 @@ def main():
             ).to(device)
             
             # Multi-GPU setup with specific device selection
-            if args.num_gpus > 1:
+            # Note: MPS (Mac) and CPU don't support multi-GPU
+            if device.type == 'mps':
+                args.num_gpus = 1
+                print("MPS (Apple Silicon) detected - multi-GPU not supported, using single device")
+            elif device.type == 'cpu':
+                args.num_gpus = 1
+                print("CPU mode - multi-GPU not applicable")
+
+            if args.num_gpus > 1 and device.type == 'cuda':
                 # Check if this is the optimized CIFAR-10 model - use single GPU for stability
                 model_unwrapped = model
                 if getattr(model_unwrapped, 'use_optimized_cifar10', False):
