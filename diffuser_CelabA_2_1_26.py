@@ -1650,6 +1650,28 @@ def main():
             attention_suffix = '_attention' if model_unwrapped.use_attention else ''
             main_checkpoint = f'diffusion_checkpoint_{dataset_name}_ts{args.timesteps}_emb{args.emb_dim}{attention_suffix}.pt'
 
+            # Check if checkpoint exists and ask user if they want to use it
+            if os.path.exists(main_checkpoint):
+                print(f"\n{'='*60}")
+                print(f"Found existing checkpoint: {main_checkpoint}")
+                print(f"{'='*60}")
+                print("0. Start fresh (ignore checkpoint)")
+                print("1. Resume from checkpoint")
+                while True:
+                    choice = input("\nSelect option (0 or 1): ").strip()
+                    if choice == "0":
+                        print("Starting fresh training - ignoring checkpoint")
+                        # Delete or rename the checkpoint so train() won't find it
+                        import shutil
+                        backup_name = main_checkpoint.replace('.pt', '_BACKUP.pt')
+                        shutil.move(main_checkpoint, backup_name)
+                        print(f"Backed up checkpoint to: {backup_name}")
+                        break
+                    elif choice == "1":
+                        print("Will resume from checkpoint")
+                        break
+                    print("Invalid choice. Please enter 0 or 1")
+
             print("\n" + "="*60)
             print("Starting Training Mode")
             print("="*60)
