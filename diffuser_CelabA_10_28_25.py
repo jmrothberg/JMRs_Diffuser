@@ -554,17 +554,20 @@ def save_samples(model, diffusion, device, epoch, avg_loss, dataset_name, batch_
 def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_name, override_lr=None, use_batch_inference=True):
     """
     Main training loop with automatic checkpointing and sample generation.
-    Uses cosine annealing scheduler for gradual LR decay.
+    Uses constant learning rate (proven best for DDPM) with optional plateau-based reduction.
     """
     model.train()
 
-    # Use CosineAnnealingLR with warm restarts - much better for diffusion models
-    # This provides gentle LR decay with periodic restarts
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    # Use ReduceLROnPlateau - only reduces LR when loss stops improving
+    # This is stable and proven for diffusion models
+    # Most DDPM papers actually use constant LR, but this gives us automatic adjustment if needed
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        T_0=50,  # Restart every 50 epochs
-        T_mult=2,  # Double the restart period each time
-        eta_min=1e-6  # Minimum learning rate
+        mode='min',
+        factor=0.5,      # Reduce LR by half when triggered
+        patience=20,     # Wait 20 epochs of no improvement before reducing
+        verbose=True,    # Print when LR changes
+        min_lr=1e-6      # Don't go below this
     )
     
     # Only set initial learning rate if explicitly overriding
@@ -760,7 +763,7 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
         
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch} Average Loss: {avg_loss:.6f}")
-        
+
         # Save latest checkpoint with diffusion parameters
         checkpoint = {
             'epoch': epoch,
@@ -775,11 +778,11 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             'use_attention': model_unwrapped.use_attention,  # Use unwrapped model here
             'use_optimized_cifar10': model_unwrapped.use_optimized_cifar10  # Add optimized flag
         }
-        
+
         # Save main checkpoint - FIXED to include timesteps in filename
         torch.save(checkpoint, f'diffusion_checkpoint_{dataset_name}_ts{diffusion.timesteps}_emb{diffusion.emb_dim}{attention_suffix}.pt')
         print(f"Saved latest checkpoint at epoch {epoch}")
-        
+
         # Save checkpoint based on dataset speed
         # Fast datasets (MNIST, CIFAR): every 10 epochs
         # Slow datasets (CelebA): every epoch
@@ -789,9 +792,9 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             checkpoint_path = f'{checkpoint_dir}/diffusion_checkpoint_ts{diffusion.timesteps}_epoch_{epoch}.pt'
             torch.save(checkpoint, checkpoint_path)
             print(f"Saved checkpoint at epoch {epoch}")
-        
-        # Step the scheduler at the end of each epoch
-        scheduler.step()
+
+        # Step the scheduler with loss value (ReduceLROnPlateau needs this)
+        scheduler.step(avg_loss)
         
         # Only save samples once per epoch, at the end
         if epoch % 1 == 0:  # Every epoch
