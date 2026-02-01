@@ -1595,12 +1595,18 @@ def main():
             attention_suffix = '_attention' if model_unwrapped.use_attention else ''
             main_checkpoint = f'diffusion_checkpoint_{dataset_name}_ts{args.timesteps}_emb{args.emb_dim}{attention_suffix}.pt'
 
-            print("\nStarting Training Mode")
-            print("---------------------")
-            
+            print("\n" + "="*60)
+            print("Starting Training Mode")
+            print("="*60)
+
             print(f"Training on {len(train_dataset)} images")
             print(f"Batch size: {args.batch_size}")
             print(f"Epochs: {args.epochs}")
+            print(f"\n💡 TIP: Press Ctrl-C to stop training safely")
+            print("   - Saves emergency checkpoint")
+            print("   - Cleans up GPU memory")
+            print("   - Can resume from last checkpoint")
+            print("="*60 + "\n")
             
             # Modified optimizer settings
             optimizer = optim.AdamW(
@@ -1642,9 +1648,57 @@ def main():
             # Train the model
             try:
                 train(model, diffusion, train_loader, optimizer, device, args.epochs, dataset_name, override_lr, use_batch_inference)
+            except KeyboardInterrupt:
+                print("\n" + "="*60)
+                print("Training interrupted by user (Ctrl-C)")
+                print("="*60)
+                print("Cleaning up GPU memory...")
+
+                # Clean up GPU memory
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+                # Save emergency checkpoint
+                model_unwrapped = model.module if isinstance(model, nn.DataParallel) else model
+                attention_suffix = '_attention' if model_unwrapped.use_attention else ''
+                emergency_checkpoint = f'diffusion_checkpoint_{dataset_name}_ts{args.timesteps}_emb{args.emb_dim}{attention_suffix}_INTERRUPTED.pt'
+
+                print(f"Saving emergency checkpoint to: {emergency_checkpoint}")
+                try:
+                    checkpoint = {
+                        'epoch': -1,  # Mark as interrupted
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'timesteps': args.timesteps,
+                        'schedule_type': args.schedule_type,
+                        'dataset_name': dataset_name,
+                        'emb_dim': args.emb_dim,
+                        'use_attention': model_unwrapped.use_attention,
+                        'use_optimized_cifar10': getattr(model_unwrapped, 'use_optimized_cifar10', False),
+                        'interrupted': True
+                    }
+                    torch.save(checkpoint, emergency_checkpoint)
+                    print(f"✓ Emergency checkpoint saved successfully")
+                except Exception as save_error:
+                    print(f"✗ Failed to save emergency checkpoint: {save_error}")
+
+                print("\nGPU cleanup complete. Safe to exit.")
+                print("You can resume training from the last saved checkpoint.")
+                return
             except Exception as e:
+                print(f"\n{'='*60}")
+                print(f"Training error: {e}")
+                print(f"{'='*60}")
+
+                # Clean up GPU on error
+                if device.type == 'cuda':
+                    print("Cleaning up GPU memory...")
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
                 if args.num_gpus > 1:
-                    print(f"\nTraining failed with DataParallel. Try these fixes:")
+                    print(f"\nMulti-GPU troubleshooting:")
                     print(f"1. Reduce num_gpus from {args.num_gpus} to {max(1, args.num_gpus-1)}")
                     print(f"2. Reduce batch_size from {args.batch_size} to {max(1, args.batch_size//2)}")
                     print(f"3. Set CUDA_LAUNCH_BLOCKING=1 to debug exactly where it hangs")
@@ -1656,10 +1710,31 @@ def main():
             print(f"\nTraining complete! Model saved to {args.model_path}")
             
         else:  # inference mode
-            inference_mode(args.model_path, device, dataset_name)
+            try:
+                inference_mode(args.model_path, device, dataset_name)
+            except KeyboardInterrupt:
+                print("\n\nInference interrupted by user (Ctrl-C)")
+                print("Exiting gracefully...")
 
+    except KeyboardInterrupt:
+        print("\n\nProgram interrupted by user (Ctrl-C)")
+        print("Exiting...")
     except Exception as e:
+        print(f"\n{'='*60}")
         print(f"An error occurred: {e}")
+        print(f"{'='*60}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Final cleanup
+        if 'device' in locals() and torch.cuda.is_available():
+            print("\nPerforming final GPU cleanup...")
+            torch.cuda.empty_cache()
+            if torch.cuda.device_count() > 0:
+                for i in range(torch.cuda.device_count()):
+                    torch.cuda.set_device(i)
+                    torch.cuda.empty_cache()
+            print("✓ GPU cleanup complete")
 
 if __name__ == '__main__':
     main()
