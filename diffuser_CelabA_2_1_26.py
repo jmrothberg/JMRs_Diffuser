@@ -788,9 +788,9 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
 
             optimizer.zero_grad()
             loss.backward()
-            # Use higher gradient clipping for optimized CIFAR-10 model (smaller model needs less clipping)
+            # Use LOWER gradient clipping for optimized CIFAR-10 model (smaller model needs MORE clipping to prevent mode collapse)
             model_unwrapped = model.module if isinstance(model, nn.DataParallel) else model
-            max_norm = 1.0 if getattr(model_unwrapped, 'use_optimized_cifar10', False) else 0.5
+            max_norm = 0.3 if getattr(model_unwrapped, 'use_optimized_cifar10', False) else 0.5
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
             optimizer.step()
             
@@ -1119,7 +1119,7 @@ def main():
                     'beta_start': 1e-4,         # Standard DDPM value
                     'beta_end': 0.02,           # Standard DDPM value
                     'batch_size': 128,          # Large batch for smaller model
-                    'learning_rate': 1e-4,      # LOWERED: Smaller model needs gentler LR (was 3e-4, caused mode collapse)
+                    'learning_rate': 5e-5,      # LOWERED AGAIN: Small model needs very gentle LR to prevent mode collapse (was 1e-4, still too high)
                     'schedule_type': 'linear',  # Linear schedule proven for CIFAR-10
                     'cosine_s': 0.008,          # Not used with linear
                     'noise_scale': 1.0,         # Standard noise scale
