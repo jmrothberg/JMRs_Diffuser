@@ -639,8 +639,21 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
                         break
                     print(f"Invalid choice. Please enter 0-{len(compatible_checkpoints)}")
             elif len(compatible_checkpoints) == 1:
-                checkpoint_path = compatible_checkpoints[0]
-                print(f"Found compatible checkpoint in root directory: {checkpoint_path}")
+                # Single compatible checkpoint - ask if user wants to use it
+                print(f"\nFound compatible checkpoint: {compatible_checkpoints[0]}")
+                print("0. Start fresh (no checkpoint)")
+                print(f"1. Use checkpoint: {compatible_checkpoints[0]}")
+                while True:
+                    choice = input("\nSelect option (0 or 1): ").strip()
+                    if choice == "0":
+                        print("Starting fresh training without checkpoint")
+                        checkpoint_path = None
+                        break
+                    elif choice == "1":
+                        checkpoint_path = compatible_checkpoints[0]
+                        print(f"Selected checkpoint: {checkpoint_path}")
+                        break
+                    print("Invalid choice. Please enter 0 or 1")
         
         elif os.path.exists(checkpoint_dir):
             dir_checkpoints = [f for f in os.listdir(checkpoint_dir) 
@@ -1660,8 +1673,9 @@ def main():
             
             # Add override learning rate option when loading from checkpoint
             override_lr = None
-            if os.path.exists(main_checkpoint):
-                print("\nFound existing checkpoint.")
+            # Only ask about overriding LR if user chose to use a checkpoint
+            if checkpoint_path and os.path.exists(checkpoint_path):
+                print("\nLoading from checkpoint - Learning rate options:")
                 override_choice = input("Would you like to override the learning rate? (y/n): ").lower()
                 if override_choice == 'y':
                     override_lr = get_input_with_default("Enter new learning rate", args.learning_rate)
