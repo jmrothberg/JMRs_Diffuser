@@ -201,6 +201,34 @@ class ConditionalUNet(nn.Module):
             nn.Conv2d(final_ch2, in_channels, kernel_size=3, padding=1)
         )
 
+        # Initialize weights for stable training
+        self._init_weights()
+
+    def _init_weights(self):
+        """
+        Initialize weights for stable diffusion training.
+        Critical: Zero-initialize final layer so model starts by predicting zero noise,
+        then gradually learns the correct output scale.
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=0.02)
+
+        # CRITICAL: Zero-initialize final output layer
+        # This ensures the model initially predicts near-zero noise and gradually
+        # learns to output the full noise range during training
+        final_conv = self.final[-1]  # Last conv layer
+        nn.init.zeros_(final_conv.weight)
+        nn.init.zeros_(final_conv.bias)
+
     def forward(self, x, t, c):
         """
         Forward pass to predict noise in input images.
@@ -788,9 +816,18 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
 
             optimizer.zero_grad()
             loss.backward()
-            # Use LOWER gradient clipping for optimized CIFAR-10 model (smaller model needs MORE clipping to prevent mode collapse)
+
+            # Gradient clipping with proper values for stable training
+            # With proper weight initialization, we can use standard clipping values
             model_unwrapped = model.module if isinstance(model, nn.DataParallel) else model
-            max_norm = 0.3 if getattr(model_unwrapped, 'use_optimized_cifar10', False) else 0.5
+            max_norm = 1.0 if getattr(model_unwrapped, 'use_optimized_cifar10', False) else 1.0
+
+            # Monitor gradient norm before clipping for debugging
+            if batch_idx % 100 == 0:
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+                if total_grad_norm > 50:
+                    print(f"  WARNING: Large gradient norm {total_grad_norm:.2f}")
+
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
             optimizer.step()
             
@@ -799,14 +836,23 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             if batch_idx % 100 == 0:
                 print(f'Epoch {epoch}, Batch {batch_idx}/{len(dataloader)}, '
                       f'Loss: {loss.item():.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}')
-                
-                #if batch_idx % 500 == 0:
-                #    save_samples(model, diffusion, device, epoch, batch_idx)
-            
-            # Inside training loop, add this debug print
-            if batch_idx == 0 and epoch == 0:
-                print("Predicted noise range:", predicted_noise.min().item(), predicted_noise.max().item())
-                print("Target noise range:", target_noise.min().item(), target_noise.max().item())
+
+            # Enhanced diagnostics at start of each epoch
+            if batch_idx == 0:
+                pred_min, pred_max = predicted_noise.min().item(), predicted_noise.max().item()
+                target_min, target_max = target_noise.min().item(), target_noise.max().item()
+                print(f"Predicted noise range: {pred_min:.2f} to {pred_max:.2f}")
+                print(f"Target noise range: {target_min:.2f} to {target_max:.2f}")
+
+                # Early warning system for training issues
+                pred_std = predicted_noise.std().item()
+                target_std = target_noise.std().item()
+                if pred_std < 0.3 * target_std:
+                    print(f"  ⚠️  WARNING: Predicted noise std ({pred_std:.2f}) is much smaller than target ({target_std:.2f})")
+                    print(f"     This may indicate mode collapse or initialization issues")
+                if torch.isnan(loss):
+                    print(f"  ❌ ERROR: NaN loss detected at epoch {epoch}, batch {batch_idx}")
+                    print(f"     Training will likely fail - consider reducing learning rate")
         
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch} Average Loss: {avg_loss:.6f}")
@@ -1101,8 +1147,8 @@ def main():
                     'timesteps': 1000,          # Increased from 500 - CIFAR-10 needs more steps
                     'beta_start': 1e-4,         # Standard DDPM value
                     'beta_end': 0.02,           # Standard DDPM value for CIFAR-10
-                    'batch_size': 128,          # Larger batch for more stable gradients
-                    'learning_rate': 2e-4,      # Higher LR for faster convergence
+                    'batch_size': 64,           # Reduced from 128 for gradient stability
+                    'learning_rate': 1e-4,      # Conservative LR prevents NaN divergence (was 2e-4)
                     'schedule_type': 'linear',  # Linear is proven for CIFAR-10
                     'cosine_s': 0.008,          # Not used with linear
                     'noise_scale': 1.0,         # Standard noise scale
@@ -1118,8 +1164,8 @@ def main():
                     'timesteps': 1000,          # Increased from 500 for better quality
                     'beta_start': 1e-4,         # Standard DDPM value
                     'beta_end': 0.02,           # Standard DDPM value
-                    'batch_size': 128,          # Large batch for smaller model
-                    'learning_rate': 5e-5,      # LOWERED AGAIN: Small model needs very gentle LR to prevent mode collapse (was 1e-4, still too high)
+                    'batch_size': 64,           # Reduced from 128 for gradient diversity
+                    'learning_rate': 1e-4,      # Balanced LR with proper weight init (was 5e-5, too slow)
                     'schedule_type': 'linear',  # Linear schedule proven for CIFAR-10
                     'cosine_s': 0.008,          # Not used with linear
                     'noise_scale': 1.0,         # Standard noise scale
