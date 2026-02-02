@@ -2,7 +2,7 @@
 Conditional Diffusion Model for Image Generation
 Author: Jonathan M. Rothberg
 Supports: MNIST, CIFAR-10 (regular/optimized), and CelebA datasets
-Features: U-Net architecture, self-attention, multi-GPU training
+Features: U-Net architecture, self-attention, multi-GPU training, EMA
 """
 import torch
 import torch.nn as nn
@@ -17,6 +17,72 @@ import argparse
 import tempfile
 import shutil
 import sys
+import copy
+
+
+class EMA:
+    """
+    Exponential Moving Average of model weights.
+    
+    EMA maintains a smoothed version of model weights that often produces
+    better samples than the raw trained weights. Used by most state-of-the-art
+    diffusion models (Stable Diffusion, DALL-E 2, Imagen, etc.)
+    
+    Usage:
+        ema = EMA(model, decay=0.9999)
+        for batch in dataloader:
+            loss = train_step(model, batch)
+            loss.backward()
+            optimizer.step()
+            ema.update()  # Update EMA weights after each step
+        
+        # For sampling, use EMA weights:
+        ema.apply_shadow()  # Switch to EMA weights
+        samples = sample(model)
+        ema.restore()  # Switch back to training weights
+    """
+    def __init__(self, model, decay=0.9999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        
+        # Initialize shadow weights as copy of model weights
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+    
+    def update(self):
+        """Update EMA weights with current model weights."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = (
+                    self.decay * self.shadow[name] + 
+                    (1 - self.decay) * param.data
+                )
+    
+    def apply_shadow(self):
+        """Apply EMA weights to model (for sampling)."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.backup[name] = param.data.clone()
+                param.data = self.shadow[name]
+    
+    def restore(self):
+        """Restore original weights (for training)."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                param.data = self.backup[name]
+        self.backup = {}
+    
+    def state_dict(self):
+        """Return EMA state for checkpointing."""
+        return {'shadow': self.shadow, 'decay': self.decay}
+    
+    def load_state_dict(self, state_dict):
+        """Load EMA state from checkpoint."""
+        self.shadow = state_dict['shadow']
+        self.decay = state_dict.get('decay', self.decay)
 
 """
 Conditional Diffusion Model for Image Generation
@@ -433,26 +499,18 @@ class DiffusionModel:
                            torch.sqrt(alpha_cumprod)
                 x_0_pred = torch.clamp(x_0_pred, -1, 1)
                 
-                # FIXED: Use correct DDPM posterior mean formula
-                # Requires alpha_cumprod_prev (cumulative product at t-1)
-                alpha_cumprod_prev = self.alphas_cumprod[i-1] if i > 0 else torch.tensor(1.0).to(device)
-                
-                # Posterior mean coefficients
-                coef1 = torch.sqrt(alpha_cumprod_prev) * beta / (1. - alpha_cumprod)
-                coef2 = torch.sqrt(alpha) * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
-                mean = coef1 * x_0_pred + coef2 * x
+                # Original working formula from old code
+                mean = (beta * x_0_pred + (1. - beta) * x) / torch.sqrt(alpha)
                 
                 if i > 0:
                     noise = torch.randn_like(x)
-                    # Posterior variance: beta_t * (1 - alpha_cumprod_prev) / (1 - alpha_cumprod)
-                    posterior_variance = beta * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
                     # Use use_noise_scaling parameter
                     if self.use_noise_scaling:
                         # Scale noise down over time
                         current_scale = self.noise_scale * (i / self.timesteps)
-                        x = mean + torch.sqrt(posterior_variance) * noise * current_scale
+                        x = mean + torch.sqrt(beta) * noise * current_scale
                     else:
-                        x = mean + torch.sqrt(posterior_variance) * noise * self.noise_scale
+                        x = mean + torch.sqrt(beta) * noise * self.noise_scale
                 else:
                     x = mean
             
@@ -510,26 +568,18 @@ class DiffusionModel:
                            torch.sqrt(alpha_cumprod)
                 x_0_pred = torch.clamp(x_0_pred, -1, 1)
 
-                # FIXED: Use correct DDPM posterior mean formula
-                # Requires alpha_cumprod_prev (cumulative product at t-1)
-                alpha_cumprod_prev = self.alphas_cumprod[i-1] if i > 0 else torch.tensor(1.0).to(device)
-                
-                # Posterior mean coefficients
-                coef1 = torch.sqrt(alpha_cumprod_prev) * beta / (1. - alpha_cumprod)
-                coef2 = torch.sqrt(alpha) * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
-                mean = coef1 * x_0_pred + coef2 * x
+                # Original working formula from old code
+                mean = (beta * x_0_pred + (1. - beta) * x) / torch.sqrt(alpha)
 
                 if i > 0:
                     noise = torch.randn_like(x)
-                    # Posterior variance: beta_t * (1 - alpha_cumprod_prev) / (1 - alpha_cumprod)
-                    posterior_variance = beta * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
                     # Use use_noise_scaling parameter
                     if self.use_noise_scaling:
                         # Scale noise down over time
                         current_scale = self.noise_scale * (i / self.timesteps)
-                        x = mean + torch.sqrt(posterior_variance) * noise * current_scale
+                        x = mean + torch.sqrt(beta) * noise * current_scale
                     else:
-                        x = mean + torch.sqrt(posterior_variance) * noise * self.noise_scale
+                        x = mean + torch.sqrt(beta) * noise * self.noise_scale
                 else:
                     x = mean
 
@@ -592,16 +642,22 @@ def save_samples(model, diffusion, device, epoch, avg_loss, dataset_name, batch_
     print(f"\nSaved grid of all digits to {filename} (using {method} generation)")
     
 
-def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_name, override_lr=None, use_batch_inference=True):
+def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_name, override_lr=None, use_batch_inference=True, use_ema=True):
     """
     Main training loop with automatic checkpointing and sample generation.
-    Uses constant learning rate (proven best for DDPM) with optional plateau-based reduction.
+    Uses EMA (Exponential Moving Average) for better sample quality.
     """
     model.train()
+    
+    # Initialize EMA for better sample quality
+    # EMA maintains smoothed weights that typically produce better samples
+    ema = None
+    if use_ema:
+        model_for_ema = model.module if isinstance(model, nn.DataParallel) else model
+        ema = EMA(model_for_ema, decay=0.9999)
+        print("EMA enabled (decay=0.9999) for improved sample quality")
 
     # Use ReduceLROnPlateau - only reduces LR when loss stops improving
-    # This is stable and proven for diffusion models
-    # Most DDPM papers actually use constant LR, but this gives us automatic adjustment if needed
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
@@ -615,7 +671,6 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
         for param_group in optimizer.param_groups:
             param_group['lr'] = override_lr
     
-    # Rest of the existing train function remains exactly the same
     start_epoch = 0
     
     # Add attention to checkpoint directory name
@@ -781,6 +836,11 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             
             start_epoch = checkpoint['epoch'] + 1
             print(f"Resuming from epoch {start_epoch}")
+            
+            # Load EMA state if available
+            if ema is not None and 'ema_state_dict' in checkpoint and checkpoint['ema_state_dict'] is not None:
+                ema.load_state_dict(checkpoint['ema_state_dict'])
+                print("Loaded EMA weights from checkpoint")
 
     # Create checkpoints directory if it doesn't exist
     checkpoint_dir = f'checkpoints_{dataset_name}_{diffusion.name_suffix}{attention_suffix}'
@@ -833,6 +893,10 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
             optimizer.step()
             
+            # Update EMA weights after each step
+            if ema is not None:
+                ema.update()
+            
             total_loss += loss.item()
             
             if batch_idx % 100 == 0:
@@ -868,10 +932,11 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             'loss': avg_loss,
             'timesteps': diffusion.timesteps,
             'schedule_type': diffusion.schedule_type,
-            'dataset_name': dataset_name,  # Add dataset name to checkpoint
-            'emb_dim': diffusion.emb_dim,  # Add emb_dim to checkpoint
-            'use_attention': model_unwrapped.use_attention,  # Use unwrapped model here
-            'use_optimized_cifar10': model_unwrapped.use_optimized_cifar10  # Add optimized flag
+            'dataset_name': dataset_name,
+            'emb_dim': diffusion.emb_dim,
+            'use_attention': model_unwrapped.use_attention,
+            'use_optimized_cifar10': model_unwrapped.use_optimized_cifar10,
+            'ema_state_dict': ema.state_dict() if ema is not None else None  # Save EMA weights
         }
 
         # Save main checkpoint - FIXED to include timesteps in filename
@@ -897,9 +962,13 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
         if new_lr != old_lr:
             print(f"Learning rate reduced: {old_lr:.6f} → {new_lr:.6f}")
         
-        # Only save samples once per epoch, at the end
+        # Save samples using EMA weights (produces better quality samples)
         if epoch % 1 == 0:  # Every epoch
+            if ema is not None:
+                ema.apply_shadow()  # Use EMA weights for sampling
             save_samples(model, diffusion, device, epoch, avg_loss, dataset_name, use_batch_inference=use_batch_inference)
+            if ema is not None:
+                ema.restore()  # Restore training weights
 
 def inference_mode(model_path, device, dataset_name):
     """Interactive generation mode - input class labels to generate corresponding images."""
@@ -1146,16 +1215,17 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 # Full quality mode: 768→1536→3072 with attention
+                # Using OLD WORKING noise schedule
                 'defaults': {
-                    'timesteps': 1000,          # More steps = better quality
-                    'beta_start': 1e-4,
-                    'beta_end': 0.02,
-                    'batch_size': 64,           # Smaller batch for large model
+                    'timesteps': 500,
+                    'beta_start': 1e-5,         # OLD VALUE - gentler start
+                    'beta_end': 0.012,          # OLD VALUE - less aggressive
+                    'batch_size': 32,
                     'learning_rate': 1e-4,
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
-                    'emb_dim': 128              # Full embedding
+                    'emb_dim': 128
                 }
             },
             'cifar10_optimized': {
@@ -1164,16 +1234,17 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 # Faster mode: 384→768→1536, no attention
+                # Using OLD WORKING noise schedule
                 'defaults': {
-                    'timesteps': 500,           # Fewer steps for speed
-                    'beta_start': 1e-4,
-                    'beta_end': 0.02,
-                    'batch_size': 64,
+                    'timesteps': 500,
+                    'beta_start': 1e-5,         # OLD VALUE - gentler start
+                    'beta_end': 0.012,          # OLD VALUE - less aggressive
+                    'batch_size': 32,
                     'learning_rate': 1e-4,
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
-                    'emb_dim': 128,             # Same embedding as regular
+                    'emb_dim': 128,
                     'use_optimized_cifar10': True
                 }
             },
@@ -1183,11 +1254,12 @@ def main():
                 'image_size': 64,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 # Full quality for faces: 768→1536→3072 with attention
+                # Gentler noise schedule for 64x64 faces
                 'defaults': {
                     'timesteps': 1000,
-                    'beta_start': 1e-4,
-                    'beta_end': 0.02,
-                    'batch_size': 32,           # Smaller for 64x64 images
+                    'beta_start': 1e-5,         # Gentler start like CIFAR
+                    'beta_end': 0.015,          # Slightly higher for larger images
+                    'batch_size': 16,           # Smaller for 64x64 + large model
                     'learning_rate': 1e-4,
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,

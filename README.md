@@ -23,7 +23,7 @@ Jonathan M. Rothberg
   - Linear and cosine noise schedules
   - Multi-GPU support with DataParallel
   - Automatic checkpointing and resumption
-  - OneCycleLR learning rate scheduling
+  - **EMA (Exponential Moving Average)** for better sample quality
   - Gradient clipping for stability
   - Batch and sequential sample generation
 
