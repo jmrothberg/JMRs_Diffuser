@@ -6,6 +6,45 @@ import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime
 
+def list_sample_folders():
+    """List all sample folders in current directory and let user select one."""
+    # Find all folders starting with 'samples_'
+    sample_dirs = [d for d in os.listdir('.') if os.path.isdir(d) and d.startswith('samples_')]
+    
+    if not sample_dirs:
+        print("No sample folders found (looking for folders starting with 'samples_')")
+        return None
+    
+    # Sort by modification time (most recent first)
+    sample_dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    
+    print("\n=== Available Sample Folders ===")
+    for i, folder in enumerate(sample_dirs, 1):
+        # Count PNG files and get epoch range
+        pngs = [f for f in os.listdir(folder) if f.endswith('.png')]
+        epochs = []
+        for f in pngs:
+            match = re.search(r'epoch_(\d+)_', f)
+            if match:
+                epochs.append(int(match.group(1)))
+        
+        epoch_info = f"epochs {min(epochs)}-{max(epochs)}" if epochs else "no epochs"
+        print(f"  {i}. {folder} ({len(pngs)} images, {epoch_info})")
+    
+    print(f"  0. Enter custom path")
+    
+    while True:
+        choice = input(f"\nSelect folder (1-{len(sample_dirs)}, or 0 for custom): ").strip()
+        if choice == "0":
+            custom = input("Enter path: ").strip()
+            if os.path.isdir(custom):
+                return custom
+            print("Invalid directory")
+        elif choice.isdigit() and 1 <= int(choice) <= len(sample_dirs):
+            return sample_dirs[int(choice) - 1]
+        else:
+            print(f"Please enter 0-{len(sample_dirs)}")
+
 def select_directory_gui():
     """Open file dialog to select directory containing loss plot PNG files."""
     try:
@@ -35,11 +74,14 @@ def plot_loss_from_filenames(directory=None):
 
     Expected filename format: epoch_X_loss_Y.png
     """
-    # Use GUI to select directory, or use provided directory
+    # Select directory: command line arg > interactive list > GUI fallback
     if directory is None:
-        selected_dir = select_directory_gui()
+        selected_dir = list_sample_folders()
         if not selected_dir:
-            print("No directory selected. Usage: python plot_loss.py [directory_path]")
+            # Fallback to GUI if no sample folders found
+            selected_dir = select_directory_gui()
+        if not selected_dir:
+            print("No directory selected. Usage: python diffuser_plot_loss_Oct_26_25.py [directory_path]")
             return
     else:
         selected_dir = directory
@@ -70,6 +112,13 @@ def plot_loss_from_filenames(directory=None):
     data.sort(key=lambda x: x[0])
     epochs, losses = zip(*data)
     losses = np.array(losses)
+    
+    # Print summary stats
+    print(f"\n=== Loss Summary ===")
+    print(f"Epochs: {min(epochs)} to {max(epochs)} ({len(epochs)} total)")
+    print(f"Loss range: {losses.min():.6f} to {losses.max():.6f}")
+    print(f"Final loss: {losses[-1]:.6f}")
+    print(f"Best loss: {losses.min():.6f} (epoch {epochs[np.argmin(losses)]})")
 
     # Create short name for directory (remove 'samples_' prefix and common parts)
     dir_basename = os.path.basename(selected_dir)

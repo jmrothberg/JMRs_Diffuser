@@ -71,18 +71,31 @@ class ConditionalUNet(nn.Module):
             emb_dim = 128
 
         # Configure model capacity based on dataset
-        if use_optimized_cifar10 and in_channels == 3:
-            # Optimized: Smaller model for faster CIFAR-10 training
+        # Channels should INCREASE as spatial resolution DECREASES (standard U-Net pattern)
+        if in_channels == 1:
+            # MNIST: Tiny model for simple 28x28 grayscale digits
             capacity_mult = 1.0
-            base_init = 384
+            base_init = 32
+            base_down1 = 64
+            base_down2 = 128
+        elif use_optimized_cifar10:
+            # CIFAR-10 Optimized: Small model for fast training (32x32 RGB)
+            capacity_mult = 1.0
+            base_init = 64
+            base_down1 = 128
+            base_down2 = 256
+        elif emb_dim >= 256:
+            # CelebA: Medium model for 64x64 faces (emb_dim=256 indicates CelebA)
+            capacity_mult = 1.0
+            base_init = 128
             base_down1 = 256
             base_down2 = 512
         else:
-            # Standard: Larger capacity for better quality
-            capacity_mult = 1.5 if in_channels == 3 else 1.0
-            base_init = 512
-            base_down1 = 1024
-            base_down2 = 2048
+            # Standard CIFAR-10: Medium model for 32x32 RGB (emb_dim=128)
+            capacity_mult = 1.0
+            base_init = 128
+            base_down1 = 256
+            base_down2 = 512
 
         # Apply capacity multiplier to channel dimensions
         init_channels   = int(base_init * capacity_mult)
@@ -201,33 +214,7 @@ class ConditionalUNet(nn.Module):
             nn.Conv2d(final_ch2, in_channels, kernel_size=3, padding=1)
         )
 
-        # Initialize weights for stable training
-        self._init_weights()
-
-    def _init_weights(self):
-        """
-        Initialize weights for stable diffusion training.
-        Critical: Zero-initialize final layer so model starts by predicting zero noise,
-        then gradually learns the correct output scale.
-        """
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Embedding):
-                nn.init.normal_(m.weight, std=0.02)
-
-        # CRITICAL: Zero-initialize final output layer
-        # This ensures the model initially predicts near-zero noise and gradually
-        # learns to output the full noise range during training
-        final_conv = self.final[-1]  # Last conv layer
-        nn.init.zeros_(final_conv.weight)
-        nn.init.zeros_(final_conv.bias)
+        # Use PyTorch default initialization - simple and stable
 
     def forward(self, x, t, c):
         """
@@ -446,21 +433,31 @@ class DiffusionModel:
                 alpha_cumprod = self.alphas_cumprod[i]
                 beta = self.betas[i]
                 
+                # Predict x_0 from current noisy image and predicted noise
                 x_0_pred = (x - torch.sqrt(1. - alpha_cumprod) * predicted_noise) / \
                            torch.sqrt(alpha_cumprod)
                 x_0_pred = torch.clamp(x_0_pred, -1, 1)
                 
-                mean = (beta * x_0_pred + (1. - beta) * x) / torch.sqrt(alpha)
+                # FIXED: Use correct DDPM posterior mean formula
+                # Requires alpha_cumprod_prev (cumulative product at t-1)
+                alpha_cumprod_prev = self.alphas_cumprod[i-1] if i > 0 else torch.tensor(1.0).to(device)
+                
+                # Posterior mean coefficients
+                coef1 = torch.sqrt(alpha_cumprod_prev) * beta / (1. - alpha_cumprod)
+                coef2 = torch.sqrt(alpha) * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
+                mean = coef1 * x_0_pred + coef2 * x
                 
                 if i > 0:
                     noise = torch.randn_like(x)
+                    # Posterior variance: beta_t * (1 - alpha_cumprod_prev) / (1 - alpha_cumprod)
+                    posterior_variance = beta * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
                     # Use use_noise_scaling parameter
                     if self.use_noise_scaling:
                         # Scale noise down over time
                         current_scale = self.noise_scale * (i / self.timesteps)
-                        x = mean + torch.sqrt(beta) * noise * current_scale
+                        x = mean + torch.sqrt(posterior_variance) * noise * current_scale
                     else:
-                        x = mean + torch.sqrt(beta) * noise * self.noise_scale
+                        x = mean + torch.sqrt(posterior_variance) * noise * self.noise_scale
                 else:
                     x = mean
             
@@ -513,21 +510,31 @@ class DiffusionModel:
                 alpha_cumprod = self.alphas_cumprod[i]
                 beta = self.betas[i]
 
+                # Predict x_0 from current noisy image and predicted noise
                 x_0_pred = (x - torch.sqrt(1. - alpha_cumprod) * predicted_noise) / \
                            torch.sqrt(alpha_cumprod)
                 x_0_pred = torch.clamp(x_0_pred, -1, 1)
 
-                mean = (beta * x_0_pred + (1. - beta) * x) / torch.sqrt(alpha)
+                # FIXED: Use correct DDPM posterior mean formula
+                # Requires alpha_cumprod_prev (cumulative product at t-1)
+                alpha_cumprod_prev = self.alphas_cumprod[i-1] if i > 0 else torch.tensor(1.0).to(device)
+                
+                # Posterior mean coefficients
+                coef1 = torch.sqrt(alpha_cumprod_prev) * beta / (1. - alpha_cumprod)
+                coef2 = torch.sqrt(alpha) * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
+                mean = coef1 * x_0_pred + coef2 * x
 
                 if i > 0:
                     noise = torch.randn_like(x)
+                    # Posterior variance: beta_t * (1 - alpha_cumprod_prev) / (1 - alpha_cumprod)
+                    posterior_variance = beta * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)
                     # Use use_noise_scaling parameter
                     if self.use_noise_scaling:
                         # Scale noise down over time
                         current_scale = self.noise_scale * (i / self.timesteps)
-                        x = mean + torch.sqrt(beta) * noise * current_scale
+                        x = mean + torch.sqrt(posterior_variance) * noise * current_scale
                     else:
-                        x = mean + torch.sqrt(beta) * noise * self.noise_scale
+                        x = mean + torch.sqrt(posterior_variance) * noise * self.noise_scale
                 else:
                     x = mean
 
@@ -1125,17 +1132,17 @@ def main():
                 'in_channels': 1,
                 'image_size': 28,
                 'normalize': ([0.5], [0.5]),
-                # Add recommended defaults
+                # MNIST is simple - use minimal settings for fast training
                 'defaults': {
-                    'timesteps': 500,
-                    'beta_start': 1e-5,
-                    'beta_end': 0.01,
+                    'timesteps': 200,           # Digits are simple, don't need many steps
+                    'beta_start': 1e-4,
+                    'beta_end': 0.02,
                     'batch_size': 128,
-                    'learning_rate': 1e-3,
+                    'learning_rate': 1e-4,      # Conservative LR
                     'schedule_type': 'linear',
                     'cosine_s': 0.005,
-                    'noise_scale': 0.8,
-                    'emb_dim': 32  # Default for MNIST
+                    'noise_scale': 1.0,
+                    'emb_dim': 16               # Small embedding for simple task
                 }
             },
             'cifar10': {
@@ -1144,15 +1151,15 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 1000,          # Increased from 500 - CIFAR-10 needs more steps
-                    'beta_start': 1e-4,         # Standard DDPM value
-                    'beta_end': 0.02,           # Standard DDPM value for CIFAR-10
-                    'batch_size': 64,           # Reduced from 128 for gradient stability
-                    'learning_rate': 1e-4,      # Conservative LR prevents NaN divergence (was 2e-4)
-                    'schedule_type': 'linear',  # Linear is proven for CIFAR-10
-                    'cosine_s': 0.008,          # Not used with linear
-                    'noise_scale': 1.0,         # Standard noise scale
-                    'emb_dim': 128
+                    'timesteps': 500,           # 32x32 images don't need 1000 steps
+                    'beta_start': 1e-4,
+                    'beta_end': 0.02,
+                    'batch_size': 128,
+                    'learning_rate': 1e-4,
+                    'schedule_type': 'linear',
+                    'cosine_s': 0.008,
+                    'noise_scale': 1.0,
+                    'emb_dim': 64               # Reduced from 128 - 32x32 doesn't need huge embedding
                 }
             },
             'cifar10_optimized': {
@@ -1161,33 +1168,33 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 1000,          # Increased from 500 for better quality
-                    'beta_start': 1e-4,         # Standard DDPM value
-                    'beta_end': 0.02,           # Standard DDPM value
-                    'batch_size': 64,           # Reduced from 128 for gradient diversity
-                    'learning_rate': 1e-4,      # Balanced LR with proper weight init (was 5e-5, too slow)
-                    'schedule_type': 'linear',  # Linear schedule proven for CIFAR-10
-                    'cosine_s': 0.008,          # Not used with linear
-                    'noise_scale': 1.0,         # Standard noise scale
-                    'emb_dim': 128,             # Keep embedding dimension
-                    'use_optimized_cifar10': True  # Enable optimized model architecture
+                    'timesteps': 300,           # Fast training - fewer steps
+                    'beta_start': 1e-4,
+                    'beta_end': 0.02,
+                    'batch_size': 128,
+                    'learning_rate': 1e-4,
+                    'schedule_type': 'linear',
+                    'cosine_s': 0.008,
+                    'noise_scale': 1.0,
+                    'emb_dim': 32,              # Small embedding for fast model
+                    'use_optimized_cifar10': True
                 }
             },
             'celeba': {
                 'class': datasets.CelebA,
                 'in_channels': 3,
-                'image_size': 64,  # CelebA images are typically cropped to 64x64
+                'image_size': 64,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 1000,          # Optimal for high-resolution faces
-                    'beta_start': 1e-4,         # Standard DDPM value
-                    'beta_end': 0.02,           # Standard DDPM value
-                    'batch_size': 16,           # Increased from 8 (still fits in 48GB VRAM)
-                    'learning_rate': 2e-4,      # Increased from 1e-4 for faster convergence
-                    'schedule_type': 'cosine',  # Cosine works better for complex images
-                    'cosine_s': 0.008,          # Standard cosine parameter
-                    'noise_scale': 1.0,         # Standard noise scale
-                    'emb_dim': 256              # Large embedding for 64x64 resolution
+                    'timesteps': 1000,          # 64x64 faces need more steps
+                    'beta_start': 1e-4,
+                    'beta_end': 0.02,
+                    'batch_size': 64,           # Reasonable batch size
+                    'learning_rate': 1e-4,
+                    'schedule_type': 'linear',  # Linear is simpler and works
+                    'cosine_s': 0.008,
+                    'noise_scale': 1.0,
+                    'emb_dim': 128              # Reduced from 256 - 128 is enough
                 }
             }
         }
@@ -1363,8 +1370,16 @@ def main():
 
             # Now check if attention is None before asking
             if args.use_attention is None:
+                # Simple datasets or optimized models: no attention. Complex datasets: yes.
+                if dataset_name in ['mnist', 'cifar10_optimized']:
+                    attention_default = 'n'
+                    attention_note = 'not needed (fast mode)'
+                else:
+                    attention_default = 'y'
+                    attention_note = 'recommended for quality'
                 print("\nSelf-attention can improve image quality but increases training time and memory usage.")
-                use_attention = input("Use self-attention in the model? (y/n, default=y): ").lower().strip() or "y"
+                print(f"For {dataset_name.upper()}: {attention_note}")
+                use_attention = input(f"Use self-attention in the model? (y/n, default={attention_default}): ").lower().strip() or attention_default
                 args.use_attention = use_attention == 'y'
 
             print(f"\nUsing parameters:")
@@ -1381,17 +1396,26 @@ def main():
                 if device.type == 'cuda':
                     total_gpus = torch.cuda.device_count()
                     if total_gpus > 1:
+                        # Simple/optimized models: 1 GPU. Complex models: all GPUs.
+                        if dataset_name in ['mnist', 'cifar10_optimized']:
+                            default_gpus = 1
+                        else:
+                            default_gpus = total_gpus
                         print(f"\nMulti-GPU Training:")
                         print(f"Detected {total_gpus} CUDA GPUs available")
+                        if dataset_name == 'mnist':
+                            print("Note: MNIST is simple, 1 GPU is sufficient")
+                        elif dataset_name == 'cifar10_optimized':
+                            print("Note: Optimized model runs best on 1 GPU")
                         gpu_choices = [f"{i+1} GPU{'s' if i > 0 else ''}" for i in range(total_gpus)]
                         print("Options:")
                         for i, choice in enumerate(gpu_choices, 1):
                             print(f"{i}. Use {choice}")
 
                         while True:
-                            gpu_choice = input(f"\nHow many GPUs to use? (1-{total_gpus}, default={total_gpus}): ").strip()
+                            gpu_choice = input(f"\nHow many GPUs to use? (1-{total_gpus}, default={default_gpus}): ").strip()
                             if gpu_choice == "":
-                                args.num_gpus = total_gpus
+                                args.num_gpus = default_gpus
                                 break
                             elif gpu_choice.isdigit() and 1 <= int(gpu_choice) <= total_gpus:
                                 args.num_gpus = int(gpu_choice)

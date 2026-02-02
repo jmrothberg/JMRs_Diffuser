@@ -51,28 +51,27 @@ pip install -r requirements.txt
 ### Training
 
 ```bash
-# Interactive mode (recommended for beginners)
-python diffuser_CelabA_10_28_25.py --mode train
+# Interactive mode (recommended - guides you through setup)
+python diffuser_CelabA_2_1_26.py --mode train
 
 # Command line with parameters
-python diffuser_CelabA_10_28_25.py \
+python diffuser_CelabA_2_1_26.py \
   --mode train \
-  --timesteps 500 \
-  --beta_start 1e-5 \
-  --beta_end 0.012 \
-  --epochs 500 \
-  --batch_size 32 \
+  --timesteps 200 \
+  --beta_start 1e-4 \
+  --beta_end 0.02 \
+  --epochs 100 \
+  --batch_size 128 \
   --learning_rate 1e-4 \
   --schedule_type linear \
-  --emb_dim 128 \
-  --use_attention True
+  --emb_dim 16
 ```
 
 ### Inference
 
 ```bash
 # Interactive generation
-python diffuser_CelabA_10_28_25.py --mode inference
+python diffuser_CelabA_2_1_26.py --mode inference
 ```
 
 ### Visualizing Training Loss
@@ -114,45 +113,66 @@ x_{t-1} = μ_θ(x_t, t) + σ_t * z
 
 ## Hyperparameters
 
+### Model Architecture Summary
+
+| Dataset | Channels | Timesteps | emb_dim | Attention | GPUs |
+|---------|----------|-----------|---------|-----------|------|
+| MNIST | 32→64→128 | 200 | 16 | No | 1 |
+| CIFAR-10 Optimized | 64→128→256 | 300 | 32 | No | 1 |
+| CIFAR-10 | 128→256→512 | 500 | 64 | Yes | Multi |
+| CelebA | 128→256→512 | 1000 | 128 | Yes | Multi |
+
 ### Recommended Settings
 
 #### MNIST
-- Timesteps: 500
-- Beta schedule: Linear (1e-5 → 0.01)
+- Timesteps: 200 (digits are simple)
+- Beta schedule: Linear (1e-4 → 0.02)
 - Batch size: 128
-- Learning rate: 1e-3
-- Embedding dimension: 32
+- Learning rate: 1e-4
+- Embedding dimension: 16
+- Model channels: 32→64→128
+- Attention: Not needed
+- GPUs: 1 (sufficient for simple task)
 
 #### CIFAR-10
 - Timesteps: 500
-- Beta schedule: Linear (1e-5 → 0.012)
-- Batch size: 32
+- Beta schedule: Linear (1e-4 → 0.02)
+- Batch size: 128
 - Learning rate: 1e-4
-- Embedding dimension: 128
+- Embedding dimension: 64
+- Model channels: 128→256→512
+- Attention: Recommended
+- GPUs: Multi-GPU supported
 
 #### CIFAR-10 Optimized
-- Timesteps: 500
-- Beta schedule: Linear (1e-5 → 0.012)
-- Batch size: 128 (larger due to smaller model)
+- Timesteps: 300 (faster training)
+- Beta schedule: Linear (1e-4 → 0.02)
+- Batch size: 128
 - Learning rate: 1e-4
-- Embedding dimension: 128
+- Embedding dimension: 32
+- Model channels: 64→128→256
+- Attention: Not needed (fast mode)
+- GPUs: 1 (optimized for single GPU)
 
 #### CelebA
-- Timesteps: 1000
-- Beta schedule: Cosine (1e-4 → 0.02)
-- Batch size: 8
+- Timesteps: 1000 (faces need more steps)
+- Beta schedule: Linear (1e-4 → 0.02)
+- Batch size: 64
 - Learning rate: 1e-4
-- Embedding dimension: 256
+- Embedding dimension: 128
+- Model channels: 128→256→512
+- Attention: Recommended
+- GPUs: Multi-GPU supported
 
 ### Noise Schedules
 
 **Linear**: Simple uniform increase from β_start to β_end
-- Good for: Simple datasets (MNIST)
-- Faster to tune
+- Good for: All datasets (proven stable)
+- Recommended as default
 
 **Cosine**: Smoother transitions using cosine function
-- Good for: Complex datasets (CelebA, CIFAR-10)
-- Better quality but requires tuning offset parameter `s`
+- Good for: Experimentation
+- Requires tuning offset parameter `s`
 
 ## Training Details
 
@@ -197,15 +217,14 @@ The model supports DataParallel for multi-GPU training:
 
 ```
 Diffusers/
-├── diffuser_CelabA_10_28_25.py          # Main script (all datasets)
-├── diffuser_Multiparallel__attention5_Oct_25_25.py  # MNIST/CIFAR variant
+├── diffuser_CelabA_2_1_26.py           # Main training/inference script
 ├── diffuser_plot_loss_Oct_26_25.py     # Loss visualization utility
-├── requirements.txt                      # Python dependencies
-├── README.md                            # This file
-├── data/                                # Dataset storage (auto-downloaded)
-├── checkpoints_*/                       # Training checkpoints
-├── samples_*/                           # Generated samples during training
-└── inference_samples/                   # Inference mode outputs
+├── requirements.txt                     # Python dependencies
+├── README.md                           # This file
+├── data/                               # Dataset storage (auto-downloaded)
+├── checkpoints_*/                      # Training checkpoints
+├── samples_*/                          # Generated samples during training
+└── inference_samples/                  # Inference mode outputs
 ```
 
 ## CIFAR-10 Classes
