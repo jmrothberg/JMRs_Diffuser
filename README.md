@@ -118,9 +118,9 @@ x_{t-1} = μ_θ(x_t, t) + σ_t * z
 | Dataset | Channels | Timesteps | emb_dim | Attention | GPUs |
 |---------|----------|-----------|---------|-----------|------|
 | MNIST | 32→64→128 | 200 | 16 | No | 1 |
-| CIFAR-10 Optimized | 96→192→384 | 500 | 64 | No | 1 |
-| CIFAR-10 | 128→256→512 | 500 | 64 | Yes | Multi |
-| CelebA | 160→320→640 | 1000 | 128 | Yes | Multi |
+| CIFAR-10 Optimized | 384→768→1536 | 500 | 128 | No | 1 |
+| CIFAR-10 | 768→1536→3072 | 1000 | 128 | Yes | Multi |
+| CelebA | 768→1536→3072 | 1000 | 128 | Yes | Multi |
 
 ### Recommended Settings
 
@@ -135,33 +135,33 @@ x_{t-1} = μ_θ(x_t, t) + σ_t * z
 - GPUs: 1 (sufficient for simple task)
 
 #### CIFAR-10
-- Timesteps: 500
-- Beta schedule: Linear (1e-4 → 0.02)
-- Batch size: 128
-- Learning rate: 1e-4
-- Embedding dimension: 64
-- Model channels: 128→256→512
-- Attention: Recommended
-- GPUs: Multi-GPU supported
-
-#### CIFAR-10 Optimized
-- Timesteps: 500
-- Beta schedule: Linear (1e-4 → 0.02)
-- Batch size: 128
-- Learning rate: 1e-4
-- Embedding dimension: 64
-- Model channels: 96→192→384
-- Attention: No (main speedup vs regular)
-- GPUs: 1 (optimized for single GPU)
-
-#### CelebA
-- Timesteps: 1000 (64x64 faces need more steps)
+- Timesteps: 1000 (best quality)
 - Beta schedule: Linear (1e-4 → 0.02)
 - Batch size: 64
 - Learning rate: 1e-4
 - Embedding dimension: 128
-- Model channels: 160→320→640
-- Attention: Recommended for face details
+- Model channels: 768→1536→3072
+- Attention: Yes (improves object coherence)
+- GPUs: Multi-GPU supported
+
+#### CIFAR-10 Optimized
+- Timesteps: 500 (faster than regular)
+- Beta schedule: Linear (1e-4 → 0.02)
+- Batch size: 64
+- Learning rate: 1e-4
+- Embedding dimension: 128
+- Model channels: 384→768→1536 (half of regular)
+- Attention: No (main speedup)
+- GPUs: 1
+
+#### CelebA
+- Timesteps: 1000 (64x64 faces need detail)
+- Beta schedule: Linear (1e-4 → 0.02)
+- Batch size: 32
+- Learning rate: 1e-4
+- Embedding dimension: 128
+- Model channels: 768→1536→3072
+- Attention: Yes (important for face details)
 - GPUs: Multi-GPU supported
 
 ### Noise Schedules

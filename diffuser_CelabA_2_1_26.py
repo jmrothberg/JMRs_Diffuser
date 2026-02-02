@@ -71,33 +71,26 @@ class ConditionalUNet(nn.Module):
             emb_dim = 128
 
         # Configure model capacity based on dataset
-        # Channels should INCREASE as spatial resolution DECREASES (standard U-Net pattern)
         if in_channels == 1:
-            # MNIST: Tiny model for simple 28x28 grayscale digits
+            # MNIST: Small model for 28x28 grayscale (proven to work great)
             capacity_mult = 1.0
             base_init = 32
             base_down1 = 64
             base_down2 = 128
         elif use_optimized_cifar10:
-            # CIFAR-10 Optimized: Medium model - faster than regular but still capable
-            # Main speedup is from no attention, not tiny model
+            # CIFAR-10 Optimized: Half-size model, speedup from no attention
+            # Still substantial: 384→768→1536 channels
             capacity_mult = 1.0
-            base_init = 96
-            base_down1 = 192
-            base_down2 = 384
-        elif emb_dim >= 128:
-            # CelebA: Larger model for 64x64 faces (needs more capacity for fine details)
-            # emb_dim=128 indicates CelebA (CIFAR uses 64)
-            capacity_mult = 1.0
-            base_init = 160
-            base_down1 = 320
-            base_down2 = 640
+            base_init = 384
+            base_down1 = 768
+            base_down2 = 1536
         else:
-            # Standard CIFAR-10: Medium model for 32x32 RGB (emb_dim=128)
-            capacity_mult = 1.0
-            base_init = 128
-            base_down1 = 256
-            base_down2 = 512
+            # CIFAR-10 Regular & CelebA: Full size model for best quality
+            # 768→1536→3072 channels (matches old working code)
+            capacity_mult = 1.5
+            base_init = 512
+            base_down1 = 1024
+            base_down2 = 2048
 
         # Apply capacity multiplier to channel dimensions
         init_channels   = int(base_init * capacity_mult)
@@ -1152,16 +1145,17 @@ def main():
                 'in_channels': 3,
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                # Full quality mode: 768→1536→3072 with attention
                 'defaults': {
-                    'timesteps': 500,           # 32x32 images don't need 1000 steps
+                    'timesteps': 1000,          # More steps = better quality
                     'beta_start': 1e-4,
                     'beta_end': 0.02,
-                    'batch_size': 128,
+                    'batch_size': 64,           # Smaller batch for large model
                     'learning_rate': 1e-4,
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
-                    'emb_dim': 64               # Reduced from 128 - 32x32 doesn't need huge embedding
+                    'emb_dim': 128              # Full embedding
                 }
             },
             'cifar10_optimized': {
@@ -1169,16 +1163,17 @@ def main():
                 'in_channels': 3,
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                # Faster mode: 384→768→1536, no attention
                 'defaults': {
-                    'timesteps': 500,           # Same as regular - needed for quality
+                    'timesteps': 500,           # Fewer steps for speed
                     'beta_start': 1e-4,
                     'beta_end': 0.02,
-                    'batch_size': 128,
+                    'batch_size': 64,
                     'learning_rate': 1e-4,
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
-                    'emb_dim': 64,              # Proper embedding for class conditioning
+                    'emb_dim': 128,             # Same embedding as regular
                     'use_optimized_cifar10': True
                 }
             },
@@ -1187,16 +1182,17 @@ def main():
                 'in_channels': 3,
                 'image_size': 64,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                # Full quality for faces: 768→1536→3072 with attention
                 'defaults': {
-                    'timesteps': 1000,          # 64x64 faces need more steps
+                    'timesteps': 1000,
                     'beta_start': 1e-4,
                     'beta_end': 0.02,
-                    'batch_size': 64,           # Reasonable batch size
+                    'batch_size': 32,           # Smaller for 64x64 images
                     'learning_rate': 1e-4,
-                    'schedule_type': 'linear',  # Linear is simpler and works
+                    'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
-                    'emb_dim': 128              # Reduced from 256 - 128 is enough
+                    'emb_dim': 128
                 }
             }
         }
