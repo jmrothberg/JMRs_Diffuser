@@ -118,9 +118,9 @@ x_{t-1} = μ_θ(x_t, t) + σ_t * z
 | Dataset | Channels | Timesteps | emb_dim | Attention | GPUs |
 |---------|----------|-----------|---------|-----------|------|
 | MNIST | 32→64→128 | 200 | 16 | No | 1 |
-| CIFAR-10 Optimized | 64→128→256 | 300 | 32 | No | 1 |
+| CIFAR-10 Optimized | 96→192→384 | 500 | 64 | No | 1 |
 | CIFAR-10 | 128→256→512 | 500 | 64 | Yes | Multi |
-| CelebA | 128→256→512 | 1000 | 128 | Yes | Multi |
+| CelebA | 160→320→640 | 1000 | 128 | Yes | Multi |
 
 ### Recommended Settings
 
@@ -145,23 +145,23 @@ x_{t-1} = μ_θ(x_t, t) + σ_t * z
 - GPUs: Multi-GPU supported
 
 #### CIFAR-10 Optimized
-- Timesteps: 300 (faster training)
+- Timesteps: 500
 - Beta schedule: Linear (1e-4 → 0.02)
 - Batch size: 128
 - Learning rate: 1e-4
-- Embedding dimension: 32
-- Model channels: 64→128→256
-- Attention: Not needed (fast mode)
+- Embedding dimension: 64
+- Model channels: 96→192→384
+- Attention: No (main speedup vs regular)
 - GPUs: 1 (optimized for single GPU)
 
 #### CelebA
-- Timesteps: 1000 (faces need more steps)
+- Timesteps: 1000 (64x64 faces need more steps)
 - Beta schedule: Linear (1e-4 → 0.02)
 - Batch size: 64
 - Learning rate: 1e-4
 - Embedding dimension: 128
-- Model channels: 128→256→512
-- Attention: Recommended
+- Model channels: 160→320→640
+- Attention: Recommended for face details
 - GPUs: Multi-GPU supported
 
 ### Noise Schedules

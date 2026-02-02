@@ -79,17 +79,19 @@ class ConditionalUNet(nn.Module):
             base_down1 = 64
             base_down2 = 128
         elif use_optimized_cifar10:
-            # CIFAR-10 Optimized: Small model for fast training (32x32 RGB)
+            # CIFAR-10 Optimized: Medium model - faster than regular but still capable
+            # Main speedup is from no attention, not tiny model
             capacity_mult = 1.0
-            base_init = 64
-            base_down1 = 128
-            base_down2 = 256
-        elif emb_dim >= 256:
-            # CelebA: Medium model for 64x64 faces (emb_dim=256 indicates CelebA)
+            base_init = 96
+            base_down1 = 192
+            base_down2 = 384
+        elif emb_dim >= 128:
+            # CelebA: Larger model for 64x64 faces (needs more capacity for fine details)
+            # emb_dim=128 indicates CelebA (CIFAR uses 64)
             capacity_mult = 1.0
-            base_init = 128
-            base_down1 = 256
-            base_down2 = 512
+            base_init = 160
+            base_down1 = 320
+            base_down2 = 640
         else:
             # Standard CIFAR-10: Medium model for 32x32 RGB (emb_dim=128)
             capacity_mult = 1.0
@@ -1168,7 +1170,7 @@ def main():
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 'defaults': {
-                    'timesteps': 300,           # Fast training - fewer steps
+                    'timesteps': 500,           # Same as regular - needed for quality
                     'beta_start': 1e-4,
                     'beta_end': 0.02,
                     'batch_size': 128,
@@ -1176,7 +1178,7 @@ def main():
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
-                    'emb_dim': 32,              # Small embedding for fast model
+                    'emb_dim': 64,              # Proper embedding for class conditioning
                     'use_optimized_cifar10': True
                 }
             },
