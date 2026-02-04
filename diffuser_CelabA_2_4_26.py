@@ -53,13 +53,12 @@ class EMA:
                 self.shadow[name] = param.data.clone()
     
     def update(self):
-        """Update EMA weights with current model weights."""
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name] = (
-                    self.decay * self.shadow[name] + 
-                    (1 - self.decay) * param.data
-                )
+        """Update EMA weights with current model weights (in-place to avoid memory leak)."""
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if param.requires_grad:
+                    # In-place update to avoid creating new tensors
+                    self.shadow[name].mul_(self.decay).add_(param.data, alpha=1 - self.decay)
     
     def apply_shadow(self):
         """Apply EMA weights to model (for sampling)."""
@@ -922,6 +921,10 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
         
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch} Average Loss: {avg_loss:.6f}")
+        
+        # Periodic memory cleanup to prevent fragmentation
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         # Save latest checkpoint with diffusion parameters
         checkpoint = {
