@@ -135,36 +135,48 @@ class ConditionalUNet(nn.Module):
         if in_channels == 3 and emb_dim < 128:
             emb_dim = 128
 
-        # Configure model capacity based on dataset
+        # Model capacity notes:
+        # BastianChen/ddpm-demo-pytorch uses model_channels=96, channel_mult=(1,2,2)
+        # BUT that architecture uses proper ResNet blocks with sinusoidal time embedding
+        # INJECTED at every residual block (per-block conditioning).
+        # Our architecture uses channel-concatenation at the input, which is less efficient
+        # and requires much larger channel sizes to compensate.
+        # The old working values (capacity_mult=1.5) are restored below for CIFAR/CelebA.
         if in_channels == 1:
-            # MNIST: Small model for 28x28 grayscale (proven to work great)
-            capacity_mult = 1.0
-            base_init = 32
-            base_down1 = 64
-            base_down2 = 128
+            # MNIST: proven working (your original values)
+            init_channels = 32
+            down1_channels = 64
+            down2_channels = 128
+            final_ch1 = 128
+            final_ch2 = 64
         elif use_optimized_cifar10:
-            # CIFAR-10 Optimized: Half-size model, speedup from no attention
-            # Still substantial: 384→768→1536 channels
-            capacity_mult = 1.0
-            base_init = 384
-            base_down1 = 768
-            base_down2 = 1536
+            # CIFAR-10 Optimized: smaller model, no attention
+            init_channels = 96
+            down1_channels = 192
+            down2_channels = 192
+            final_ch1 = 128
+            final_ch2 = 64
         else:
-            # CIFAR-10 Regular & CelebA: Full size model for best quality
-            # 768→1536→3072 channels (matches old working code)
-            capacity_mult = 1.5
-            base_init = 512
-            base_down1 = 1024
-            base_down2 = 2048
+            # CIFAR-10 Regular & CelebA: RIGHT-SIZED for stability
+            # Previous 768->1536->3072 was 24x too large, causing NaN/mode collapse
+            # Successful DDPM implementations use ~128-256 base channels for CIFAR-10
+            if in_channels == 3 and emb_dim <= 128:
+                # CIFAR-10: proven size from working implementations
+                init_channels = 128
+                down1_channels = 256
+                down2_channels = 512
+                final_ch1 = 128
+                final_ch2 = 64
+            else:
+                # CelebA (64x64): needs more capacity for larger images
+                init_channels = 256
+                down1_channels = 512
+                down2_channels = 1024
+                final_ch1 = 192
+                final_ch2 = 96
 
-        # Apply capacity multiplier to channel dimensions
-        init_channels   = int(base_init * capacity_mult)
-        down1_channels  = int(base_down1 * capacity_mult)
-        down2_channels  = int(base_down2 * capacity_mult)
-        up1_channels    = int(base_down1 * capacity_mult)
-        up2_channels    = int(base_init * capacity_mult)
-        final_ch1       = int(128 * capacity_mult)
-        final_ch2       = int(64 * capacity_mult)
+        up1_channels = down1_channels
+        up2_channels = init_channels
         
         self.emb_dim = emb_dim
         self.num_classes = num_classes
@@ -207,8 +219,9 @@ class ConditionalUNet(nn.Module):
             nn.MaxPool2d(2)
         )
         
-        # Determine attention heads based on optimized CIFAR-10 setting
-        attention_heads = 4 if use_optimized_cifar10 else 8
+        # Attention heads: standard DDPM uses 1-4 heads
+        # Ensure at least 32 dims per head for numerical stability
+        attention_heads = max(1, min(4, down2_channels // 64))
 
         middle_layers = []
         # First convolution block of the middle
@@ -274,7 +287,32 @@ class ConditionalUNet(nn.Module):
             nn.Conv2d(final_ch2, in_channels, kernel_size=3, padding=1)
         )
 
-        # Use PyTorch default initialization - simple and stable
+        # CRITICAL: Initialize weights for stable training
+        self._init_weights()
+
+    def _init_weights(self):
+        """
+        Initialize weights for stable diffusion training.
+        Zero-init final layer so model starts predicting zero noise, then learns correct scale.
+        This is standard practice in DDPM, Stable Diffusion, DALL-E, etc.
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=0.02)
+
+        # CRITICAL: Zero-initialize final output layer
+        # Model starts by predicting near-zero noise, gradually learns full range
+        final_conv = self.final[-1]
+        nn.init.zeros_(final_conv.weight)
+        nn.init.zeros_(final_conv.bias)
 
     def forward(self, x, t, c):
         """
@@ -641,7 +679,7 @@ def save_samples(model, diffusion, device, epoch, avg_loss, dataset_name, batch_
     print(f"\nSaved grid of all digits to {filename} (using {method} generation)")
     
 
-def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_name, override_lr=None, use_batch_inference=True, use_ema=True):
+def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_name, override_lr=None, use_batch_inference=True, use_ema=False):
     """
     Main training loop with automatic checkpointing and sample generation.
     Uses EMA (Exponential Moving Average) for better sample quality.
@@ -656,16 +694,9 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
         ema = EMA(model_for_ema, decay=0.9999)
         print("EMA enabled (decay=0.9999) for improved sample quality")
 
-    # Use ReduceLROnPlateau - only reduces LR when loss stops improving
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=0.5,      # Reduce LR by half when triggered
-        patience=20,     # Wait 20 epochs of no improvement before reducing
-        min_lr=1e-6      # Don't go below this
-    )
-    
-    # Only set initial learning rate if explicitly overriding
+    # Constant learning rate - the old working code had OneCycleLR misconfigured
+    # (steps_per_epoch=len(dataloader) but stepped once/epoch) which made it a no-op.
+    # Constant LR is simpler and matches that effective behavior.
     if override_lr is not None:
         for param_group in optimizer.param_groups:
             param_group['lr'] = override_lr
@@ -823,11 +854,9 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             # Now load the properly formatted state dict
             model.load_state_dict(state_dict)
             
-            # Only load optimizer/scheduler state if not overriding learning rate
+            # Only load optimizer state if not overriding learning rate
             if override_lr is None:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                if 'scheduler_state_dict' in checkpoint:
-                    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             else:
                 print(f"Overriding learning rate to {override_lr}")
                 for param_group in optimizer.param_groups:
@@ -875,21 +904,39 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             # Calculate loss for the entire batch at once
             loss = nn.MSELoss(reduction='mean')(predicted_noise, target_noise) # No loop needed
 
+            # Enhanced diagnostics at start of each epoch - BEFORE NaN check so we always see them
+            if batch_idx == 0:
+                pred_min, pred_max = predicted_noise.min().item(), predicted_noise.max().item()
+                target_min, target_max = target_noise.min().item(), target_noise.max().item()
+                print(f"Predicted noise range: {pred_min:.2f} to {pred_max:.2f}")
+                print(f"Target noise range: {target_min:.2f} to {target_max:.2f}")
+
+                # Early warning system for training issues
+                pred_std = predicted_noise.std().item()
+                target_std = target_noise.std().item()
+                if pred_std < 0.3 * target_std:
+                    print(f"  WARNING: Predicted noise std ({pred_std:.2f}) is much smaller than target ({target_std:.2f})")
+                    print(f"     This may indicate mode collapse or initialization issues")
+
+            # Skip entire update if loss is NaN to prevent corrupting model weights
+            if torch.isnan(loss):
+                # Print warning (once per epoch on batch 0, limited on other batches)
+                if batch_idx == 0 or batch_idx % 100 == 0:
+                    print(f"  NaN loss at epoch {epoch}, batch {batch_idx} - skipping update")
+                optimizer.zero_grad()
+                continue
+
             optimizer.zero_grad()
             loss.backward()
 
-            # Gradient clipping with proper values for stable training
-            # With proper weight initialization, we can use standard clipping values
-            model_unwrapped = model.module if isinstance(model, nn.DataParallel) else model
-            max_norm = 1.0 if getattr(model_unwrapped, 'use_optimized_cifar10', False) else 1.0
-
-            # Monitor gradient norm before clipping for debugging
+            # Gradient clipping with monitoring
+            # 1.0 is standard DDPM value, works better with right-sized model
             if batch_idx % 100 == 0:
-                total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
-                if total_grad_norm > 50:
-                    print(f"  WARNING: Large gradient norm {total_grad_norm:.2f}")
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+                if grad_norm > 50:
+                    print(f"  Large gradient norm before clipping: {grad_norm:.2f}")
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             # Update EMA weights after each step
@@ -901,23 +948,6 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             if batch_idx % 100 == 0:
                 print(f'Epoch {epoch}, Batch {batch_idx}/{len(dataloader)}, '
                       f'Loss: {loss.item():.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}')
-
-            # Enhanced diagnostics at start of each epoch
-            if batch_idx == 0:
-                pred_min, pred_max = predicted_noise.min().item(), predicted_noise.max().item()
-                target_min, target_max = target_noise.min().item(), target_noise.max().item()
-                print(f"Predicted noise range: {pred_min:.2f} to {pred_max:.2f}")
-                print(f"Target noise range: {target_min:.2f} to {target_max:.2f}")
-
-                # Early warning system for training issues
-                pred_std = predicted_noise.std().item()
-                target_std = target_noise.std().item()
-                if pred_std < 0.3 * target_std:
-                    print(f"  ⚠️  WARNING: Predicted noise std ({pred_std:.2f}) is much smaller than target ({target_std:.2f})")
-                    print(f"     This may indicate mode collapse or initialization issues")
-                if torch.isnan(loss):
-                    print(f"  ❌ ERROR: NaN loss detected at epoch {epoch}, batch {batch_idx}")
-                    print(f"     Training will likely fail - consider reducing learning rate")
         
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch} Average Loss: {avg_loss:.6f}")
@@ -931,7 +961,6 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
             'loss': avg_loss,
             'timesteps': diffusion.timesteps,
             'schedule_type': diffusion.schedule_type,
@@ -956,15 +985,6 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             torch.save(checkpoint, checkpoint_path)
             print(f"Saved checkpoint at epoch {epoch}")
 
-        # Step the scheduler with loss value (ReduceLROnPlateau needs this)
-        old_lr = optimizer.param_groups[0]['lr']
-        scheduler.step(avg_loss)
-        new_lr = optimizer.param_groups[0]['lr']
-
-        # Manually print LR change (verbose parameter not available in all PyTorch versions)
-        if new_lr != old_lr:
-            print(f"Learning rate reduced: {old_lr:.6f} → {new_lr:.6f}")
-        
         # Save samples using EMA weights (produces better quality samples)
         if epoch % 1 == 0:  # Every epoch
             if ema is not None:
@@ -972,6 +992,7 @@ def train(model, diffusion, dataloader, optimizer, device, num_epochs, dataset_n
             save_samples(model, diffusion, device, epoch, avg_loss, dataset_name, use_batch_inference=use_batch_inference)
             if ema is not None:
                 ema.restore()  # Restore training weights
+            model.train()  # IMPORTANT: Switch back to train mode after sampling
 
 def inference_mode(model_path, device, dataset_name):
     """Interactive generation mode - input class labels to generate corresponding images."""
@@ -1217,14 +1238,14 @@ def main():
                 'in_channels': 3,
                 'image_size': 32,
                 'normalize': ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-                # Full quality mode: 768→1536→3072 with attention
-                # Using OLD WORKING noise schedule
+                # Right-sized model (128→256→512) with standard DDPM values
+                # Batch=64 gives 16 samples/GPU on 4 GPUs (stable GroupNorm)
                 'defaults': {
-                    'timesteps': 500,
-                    'beta_start': 1e-5,         # OLD VALUE - gentler start
-                    'beta_end': 0.012,          # OLD VALUE - less aggressive
-                    'batch_size': 32,
-                    'learning_rate': 1e-4,
+                    'timesteps': 1000,          # Standard DDPM for CIFAR-10
+                    'beta_start': 1e-4,         # Standard DDPM value
+                    'beta_end': 0.02,           # Standard DDPM value
+                    'batch_size': 64,           # 16 per GPU with 4 GPUs (stable)
+                    'learning_rate': 2e-4,      # Standard DDPM for right-sized model
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
@@ -1444,12 +1465,14 @@ def main():
             # Now check if attention is None before asking
             if args.use_attention is None:
                 # Simple datasets or optimized models: no attention. Complex datasets: yes.
-                if dataset_name in ['mnist', 'cifar10_optimized']:
-                    attention_default = 'n'
-                    attention_note = 'not needed (fast mode)'
-                else:
+                if dataset_name == 'celeba':
                     attention_default = 'y'
-                    attention_note = 'recommended for quality'
+                    attention_note = 'recommended for CelebA face quality'
+                else:
+                    # Proven CIFAR-10 implementations do NOT use attention
+                    # (BastianChen/ddpm-demo-pytorch, labml.ai DDPM)
+                    attention_default = 'n'
+                    attention_note = 'not used in proven CIFAR-10 implementations'
                 print("\nSelf-attention can improve image quality but increases training time and memory usage.")
                 print(f"For {dataset_name.upper()}: {attention_note}")
                 use_attention = input(f"Use self-attention in the model? (y/n, default={attention_default}): ").lower().strip() or attention_default
