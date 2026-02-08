@@ -1241,11 +1241,11 @@ def main():
                 # Right-sized model (128→256→512) with standard DDPM values
                 # Batch=64 gives 16 samples/GPU on 4 GPUs (stable GroupNorm)
                 'defaults': {
-                    'timesteps': 1000,          # Standard DDPM for CIFAR-10
-                    'beta_start': 1e-4,         # Standard DDPM value
-                    'beta_end': 0.02,           # Standard DDPM value
-                    'batch_size': 256,          # 256/4 GPUs = 64 per GPU (stable GroupNorm!)
-                    'learning_rate': 2e-4,      # Standard DDPM LR
+                    'timesteps': 500,           # Reduced - easier task
+                    'beta_start': 1e-5,         # Gentler noise
+                    'beta_end': 0.012,          # Less aggressive
+                    'batch_size': 128,          # Proven working size
+                    'learning_rate': 5e-5,      # VERY conservative to prevent NaN
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
@@ -1492,8 +1492,8 @@ def main():
                 if device.type == 'cuda':
                     total_gpus = torch.cuda.device_count()
                     if total_gpus > 1:
-                        # Multi-GPU defaults
-                        if dataset_name in ['mnist', 'cifar10_optimized']:
+                        # Force single GPU for CIFAR-10 until multi-GPU is proven stable
+                        if dataset_name in ['mnist', 'cifar10', 'cifar10_optimized']:
                             default_gpus = 1
                         else:
                             default_gpus = total_gpus
