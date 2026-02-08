@@ -1244,8 +1244,8 @@ def main():
                     'timesteps': 1000,          # Standard DDPM for CIFAR-10
                     'beta_start': 1e-4,         # Standard DDPM value
                     'beta_end': 0.02,           # Standard DDPM value
-                    'batch_size': 128,          # Full batch on single GPU (no DataParallel splitting)
-                    'learning_rate': 2e-4,      # Standard DDPM LR (works with single GPU)
+                    'batch_size': 256,          # 256/4 GPUs = 64 per GPU (stable GroupNorm!)
+                    'learning_rate': 2e-4,      # Standard DDPM LR
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
@@ -1492,10 +1492,8 @@ def main():
                 if device.type == 'cuda':
                     total_gpus = torch.cuda.device_count()
                     if total_gpus > 1:
-                        # CRITICAL: CIFAR-10 must use 1 GPU to avoid DataParallel gradient explosion
-                        # DataParallel with batch=64 on 4 GPUs = 16 samples/GPU (too small for GroupNorm)
-                        # This causes per-GPU statistics divergence → gradient explosion
-                        if dataset_name in ['mnist', 'cifar10', 'cifar10_optimized']:
+                        # Multi-GPU defaults
+                        if dataset_name in ['mnist', 'cifar10_optimized']:
                             default_gpus = 1
                         else:
                             default_gpus = total_gpus
@@ -1504,7 +1502,7 @@ def main():
                         if dataset_name == 'mnist':
                             print("Note: MNIST is simple, 1 GPU is sufficient")
                         elif dataset_name == 'cifar10':
-                            print("Note: CIFAR-10 uses 1 GPU to avoid DataParallel gradient issues")
+                            print(f"Note: CIFAR-10 with {total_gpus} GPUs requires large batch size (256+) for stable GroupNorm")
                         elif dataset_name == 'cifar10_optimized':
                             print("Note: Optimized model runs best on 1 GPU")
                         gpu_choices = [f"{i+1} GPU{'s' if i > 0 else ''}" for i in range(total_gpus)]
