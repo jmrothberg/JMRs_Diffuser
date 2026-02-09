@@ -1241,11 +1241,11 @@ def main():
                 # Right-sized model (128→256→512) with standard DDPM values
                 # Batch=64 gives 16 samples/GPU on 4 GPUs (stable GroupNorm)
                 'defaults': {
-                    'timesteps': 500,           # Reduced - easier task
-                    'beta_start': 1e-5,         # Gentler noise
-                    'beta_end': 0.012,          # Less aggressive
-                    'batch_size': 128,          # Proven working size
-                    'learning_rate': 5e-5,      # VERY conservative to prevent NaN
+                    'timesteps': 1000,          # Standard DDPM - better quality
+                    'beta_start': 1e-4,         # Standard DDPM noise schedule
+                    'beta_end': 0.02,           # Standard DDPM - more noise coverage
+                    'batch_size': 128,          # Keep stable batch size
+                    'learning_rate': 1e-4,      # 2x higher but still safe (was 5e-5)
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
