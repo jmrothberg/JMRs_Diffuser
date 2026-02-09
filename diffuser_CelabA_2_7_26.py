@@ -1248,8 +1248,8 @@ def main():
                     'timesteps': 1000,          # Standard DDPM - better quality
                     'beta_start': 1e-4,         # Standard DDPM noise schedule
                     'beta_end': 0.02,           # Standard DDPM - more noise coverage
-                    'batch_size': 256,          # 256/4 GPUs = 64 per GPU (multi-GPU stable)
-                    'learning_rate': 1e-4,      # Conservative for multi-GPU stability
+                    'batch_size': 256,          # Large batch on single GPU (RTX 6000 ADA has 48GB!)
+                    'learning_rate': 1e-4,      # Standard DDPM learning rate
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
@@ -1496,11 +1496,12 @@ def main():
                 if device.type == 'cuda':
                     total_gpus = torch.cuda.device_count()
                     if total_gpus > 1:
-                        # Multi-GPU settings based on stability testing
-                        if dataset_name in ['mnist', 'cifar10_optimized']:
-                            default_gpus = 1  # These work best on single GPU
+                        # DataParallel is buggy - force single GPU
+                        # User had same issue with chess game, had to write custom parallel code
+                        if dataset_name in ['mnist', 'cifar10', 'cifar10_optimized']:
+                            default_gpus = 1  # Single GPU proven stable
                         else:
-                            default_gpus = total_gpus  # CIFAR-10, CelebA use all GPUs
+                            default_gpus = total_gpus  # CelebA only
                         print(f"\nMulti-GPU Training:")
                         print(f"Detected {total_gpus} CUDA GPUs available")
                         if dataset_name == 'mnist':
