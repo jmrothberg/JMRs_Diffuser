@@ -1244,8 +1244,8 @@ def main():
                     'timesteps': 1000,          # Standard DDPM - better quality
                     'beta_start': 1e-4,         # Standard DDPM noise schedule
                     'beta_end': 0.02,           # Standard DDPM - more noise coverage
-                    'batch_size': 128,          # Keep stable batch size
-                    'learning_rate': 1e-4,      # 2x higher but still safe (was 5e-5)
+                    'batch_size': 256,          # 256/4 GPUs = 64 per GPU (multi-GPU stable)
+                    'learning_rate': 1e-4,      # Conservative for multi-GPU stability
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
@@ -1492,11 +1492,11 @@ def main():
                 if device.type == 'cuda':
                     total_gpus = torch.cuda.device_count()
                     if total_gpus > 1:
-                        # Force single GPU for CIFAR-10 until multi-GPU is proven stable
-                        if dataset_name in ['mnist', 'cifar10', 'cifar10_optimized']:
-                            default_gpus = 1
+                        # Multi-GPU settings based on stability testing
+                        if dataset_name in ['mnist', 'cifar10_optimized']:
+                            default_gpus = 1  # These work best on single GPU
                         else:
-                            default_gpus = total_gpus
+                            default_gpus = total_gpus  # CIFAR-10, CelebA use all GPUs
                         print(f"\nMulti-GPU Training:")
                         print(f"Detected {total_gpus} CUDA GPUs available")
                         if dataset_name == 'mnist':
