@@ -314,6 +314,10 @@ class ConditionalUNet(nn.Module):
         nn.init.zeros_(final_conv.weight)
         nn.init.zeros_(final_conv.bias)
 
+        # Debug: Verify zero-init worked
+        print(f"[DEBUG] Final layer weight stats: min={final_conv.weight.min().item():.6f}, max={final_conv.weight.max().item():.6f}, mean={final_conv.weight.mean().item():.6f}")
+        print(f"[DEBUG] Final layer initialized to zero: {torch.allclose(final_conv.weight, torch.zeros_like(final_conv.weight))}")
+
     def forward(self, x, t, c):
         """
         Forward pass to predict noise in input images.
