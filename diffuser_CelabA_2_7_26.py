@@ -7,7 +7,11 @@ Features: U-Net architecture, self-attention, multi-GPU training, EMA
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms, utils
 import matplotlib.pyplot as plt
 import os
@@ -1248,8 +1252,8 @@ def main():
                     'timesteps': 1000,          # Standard DDPM - better quality
                     'beta_start': 1e-4,         # Standard DDPM noise schedule
                     'beta_end': 0.02,           # Standard DDPM - more noise coverage
-                    'batch_size': 256,          # Large batch on single GPU (RTX 6000 ADA has 48GB!)
-                    'learning_rate': 1e-4,      # Standard DDPM learning rate
+                    'batch_size': 256,          # With 4 GPUs: 256/4 = 64 per GPU
+                    'learning_rate': 5e-5,      # Conservative LR for multi-GPU stability
                     'schedule_type': 'linear',
                     'cosine_s': 0.008,
                     'noise_scale': 1.0,
@@ -1496,12 +1500,11 @@ def main():
                 if device.type == 'cuda':
                     total_gpus = torch.cuda.device_count()
                     if total_gpus > 1:
-                        # DataParallel is buggy - force single GPU
-                        # User had same issue with chess game, had to write custom parallel code
-                        if dataset_name in ['mnist', 'cifar10', 'cifar10_optimized']:
-                            default_gpus = 1  # Single GPU proven stable
+                        # Multi-GPU with conservative settings
+                        if dataset_name in ['mnist', 'cifar10_optimized']:
+                            default_gpus = 1
                         else:
-                            default_gpus = total_gpus  # CelebA only
+                            default_gpus = total_gpus  # CIFAR-10 regular uses all GPUs
                         print(f"\nMulti-GPU Training:")
                         print(f"Detected {total_gpus} CUDA GPUs available")
                         if dataset_name == 'mnist':
