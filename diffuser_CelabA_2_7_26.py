@@ -1774,8 +1774,19 @@ def main():
                     print("!"*60 + "\n")
                     args.num_gpus = 1
 
+                # CRITICAL: Force zero-init final layer BEFORE DataParallel wrapping
+                model_unwrapped = model
+                final_layer = model_unwrapped.final[-1]
+                print(f"\n{'='*60}")
+                print("FORCING ZERO-INIT OF FINAL LAYER")
+                print(f"Before: weight range [{final_layer.weight.min().item():.6f}, {final_layer.weight.max().item():.6f}]")
+                nn.init.zeros_(final_layer.weight)
+                nn.init.zeros_(final_layer.bias)
+                print(f"After: weight range [{final_layer.weight.min().item():.6f}, {final_layer.weight.max().item():.6f}]")
+                print(f"{'='*60}\n")
+
                 if args.num_gpus > 1:
-                    print(f"\n{'='*60}")
+                    print(f"{'='*60}")
                     print(f"Setting up DataParallel with {args.num_gpus} GPUs")
                     print(f"{'='*60}")
                     # Select specific devices
@@ -1794,7 +1805,7 @@ def main():
                     print("- If still freezing, try reducing batch_size or num_gpus")
                     print(f"{'='*60}\n")
                 else:
-                    print(f"\n{'='*60}")
+                    print(f"{'='*60}")
                     print(f"Using SINGLE GPU (GPU 0) for training")
                     print(f"Batch size: {args.batch_size}")
                     print(f"{'='*60}\n")
